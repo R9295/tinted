@@ -4,3 +4,38 @@
 # function name per line (as printed by the tool; a leading "<- " or "-> " is
 # ignored). A failing chain that contains one of these chains as a consecutive
 # run of calls is not reported.
+
+# [transaction] Simulation executes a transaction against a bank but never
+# commits the result, and signature verification is optional by design
+# (`sigVerify` of the simulateTransaction RPC). One block per transaction type.
+<solana_runtime::bank::Bank>::simulate_transaction_unchecked::<solana_runtime_transaction::runtime_transaction::RuntimeTransaction<agave_transaction_view::resolved_transaction_view::ResolvedTransactionView<alloc::vec::Vec<u8>>>>
+
+<solana_runtime::bank::Bank>::simulate_transaction_unchecked::<solana_runtime_transaction::runtime_transaction::RuntimeTransaction<agave_transaction_view::resolved_transaction_view::ResolvedTransactionView<&[u8]>>>
+
+<solana_runtime::bank::Bank>::simulate_transaction_unchecked::<solana_runtime_transaction::runtime_transaction::RuntimeTransaction<solana_transaction::sanitized::SanitizedTransaction>>
+
+# [transaction] Test and bench helpers that process transactions without
+# verifying signatures. Nothing in agave-validator calls them; they are only in
+# the call graph because their crates are linked in.
+<solana_runtime::bank::Bank>::transfer
+
+<solana_runtime::bank_client::BankClient>::run
+
+<solana_runtime::bank_client::BankClient as solana_client_traits::SyncClient>::send_and_confirm_message::<[&solana_keypair::Keypair; 1]>
+
+<solana_banks_server::banks_server::BanksServer>::run
+
+<solana_banks_server::banks_server::BanksServer as solana_banks_interface::Banks>::process_transaction_with_metadata_and_context::{closure#0}
+
+# [transaction] On a sad leader handover the block creation loop sends
+# transactions back to banking stage without going through sigverify. They are
+# the transactions banking stage just recorded for the abandoned bank, so they
+# have already been through this check once.
+solana_core::block_creation_loop::handle_parent_ready
+
+# [transaction] NOT a false positive, but an accepted trust boundary: with
+# `--enable-scheduler-bindings`, banking stage executes and records whatever
+# the external scheduler process submits, and verifies no signatures on it.
+# SECURITY.md treats that process as an operator-trusted component. Remove this
+# block to have the check fail on it.
+<solana_core::banking_stage::consume_worker::external::ExternalWorker>::execute_batch

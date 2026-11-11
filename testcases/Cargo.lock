@@ -131,10 +131,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "drop_thread_local"
+version = "0.1.0"
+dependencies = [
+ "tinted",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+
+[[package]]
+name = "erased_drop"
+version = "0.1.0"
+dependencies = [
+ "tinted",
+]
+
+[[package]]
+name = "format_callback"
+version = "0.1.0"
+dependencies = [
+ "tinted",
+]
 
 [[package]]
 name = "heck"
@@ -228,6 +249,13 @@ checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "same_signature_method"
+version = "0.1.0"
+dependencies = [
+ "tinted",
+]
+
+[[package]]
+name = "same_trait_impl"
 version = "0.1.0"
 dependencies = [
  "tinted",

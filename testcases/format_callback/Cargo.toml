@@ -1,0 +1,8 @@
+[package]
+name = "format_callback"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tinted = { path = "../.." }

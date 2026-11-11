@@ -3,10 +3,14 @@
 resolver = "3"
 members = [
     "channel",
+    "drop_thread_local",
+    "erased_drop",
+    "format_callback",
     "order",
     "queued_closure",
     "rayon_job",
     "same_signature_method",
+    "same_trait_impl",
     "same_type_pointer",
     "skip_flag",
     "std_callback",

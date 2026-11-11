@@ -28,6 +28,7 @@ if [[ $# -gt 0 ]]; then
 else
   cases=()
   for dir in testcases/*/; do
+    [[ -f "$dir/Cargo.toml" ]] || continue
     cases+=("$(basename "$dir")")
   done
 fi

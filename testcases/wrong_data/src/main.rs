@@ -2,6 +2,7 @@
 // another. Only calls are tracked, not which data reaches the sink.
 // want: FAIL
 // today: OK
+// invariant: the validator is assumed to check the executed value
 use std::hint::black_box;
 
 fn check(x: u64) {

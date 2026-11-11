@@ -1,8 +1,8 @@
-// Gap: indirect calls are matched by type. `run_unchecked` is only ever given
+// Coverage: indirect calls are matched by type. `run_unchecked` is only ever given
 // a harmless function, but that has the same type as the function that
 // reaches the sink, so it is taken for a caller of it.
 // want: OK
-// today: FAIL
+// today: OK
 use std::hint::black_box;
 
 #[tinted::sink(data)]

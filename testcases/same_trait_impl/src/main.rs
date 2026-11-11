@@ -1,8 +1,8 @@
-// Gap: different implementations of the same trait method share a type id.
+// Coverage: different implementations of the same trait method share a type id.
 // Only Dangerous reaches the sink, and it is only called under validation,
 // but the unchecked call on Harmless is also connected to Dangerous::run.
 // want: OK
-// today: FAIL
+// today: OK
 use std::hint::black_box;
 
 trait Job {

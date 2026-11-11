@@ -1,8 +1,8 @@
-// Gap: thread-local cleanup. A value is stored under validation, but its
+// Coverage: thread-local cleanup. A value is stored under validation, but its
 // destructor runs later at thread exit. The graph does not connect cleanup
 // to the validated initialization and also includes unused storage drop glue.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{cell::RefCell, hint::black_box, thread};
 
 struct Job(u64);

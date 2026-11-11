@@ -1,8 +1,8 @@
-// Gap: type-erased destructors. Only Dangerous's destructor reaches the sink,
+// Coverage: type-erased destructors. Only Dangerous's destructor reaches the sink,
 // and it is only dropped under validation. Matching drop calls by type mixes
 // the destructors together and adds callers from unused generated drop glue.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{any::Any, hint::black_box};
 
 struct Dangerous(u64);

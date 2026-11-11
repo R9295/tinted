@@ -1,7 +1,7 @@
-// Gap: channels. Data is validated before it is sent, but a send is not a
+// Coverage: channels. Data is validated before it is sent, but a send is not a
 // call, so the chain from the sink ends in the receiving thread.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{sync::mpsc, thread};
 
 fn check(x: u64) -> u64 {

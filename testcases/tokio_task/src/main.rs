@@ -1,7 +1,7 @@
-// Gap: tokio tasks. The task is spawned under the validate function, but it
+// Coverage: tokio tasks. The task is spawned under the validate function, but it
 // is run by a tokio worker through the task's vtable, not called by it.
 // want: OK
-// today: FAIL
+// today: OK
 use tokio::runtime::{Builder, Handle};
 
 #[tinted::sink(data)]

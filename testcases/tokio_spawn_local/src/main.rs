@@ -1,8 +1,8 @@
-// Gap: local tasks. The LocalSet runs a future holding validated data
+// Coverage: local tasks. The LocalSet runs a future holding validated data
 // through its task machinery. Staying on one thread does not preserve the
 // validating future's call chain.
 // want: OK
-// today: FAIL
+// today: OK
 use std::rc::Rc;
 use tokio::{runtime::Builder, task::LocalSet};
 

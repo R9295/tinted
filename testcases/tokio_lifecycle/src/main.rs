@@ -1,8 +1,8 @@
-// Gap: runtime lifecycle callbacks. Validated data is captured when the
+// Coverage: runtime lifecycle callbacks. Validated data is captured when the
 // runtime is configured, but its worker invokes the start, stop, park and
 // unpark callbacks through stored trait objects.
 // want: OK
-// today: FAIL
+// today: OK
 use tokio::runtime::{Builder, Runtime};
 
 #[tinted::sink(data)]

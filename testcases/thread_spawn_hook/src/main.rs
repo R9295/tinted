@@ -1,8 +1,8 @@
-// Gap: spawn hooks have callbacks in both the parent and child thread.
+// Coverage: spawn hooks have callbacks in both the parent and child thread.
 // Prebuilt std invokes them separately from the thread entry point that the
 // resolver pairs with spawn_unchecked.
 // want: OK
-// today: FAIL
+// today: OK
 #![feature(thread_spawn_hook)]
 use std::thread;
 

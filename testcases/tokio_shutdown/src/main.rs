@@ -1,8 +1,8 @@
-// Gap: runtime shutdown. A pending future holds validated data and reaches
+// Coverage: runtime shutdown. A pending future holds validated data and reaches
 // the sink only in Drop. Dropping the runtime destroys the future outside
 // the validating submit function, even if the future was never polled.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{
     future::Future,
     pin::Pin,

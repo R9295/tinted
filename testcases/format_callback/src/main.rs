@@ -1,8 +1,8 @@
-// Gap: formatting callbacks. Display::fmt only runs under validation, but
+// Coverage: formatting callbacks. Display::fmt only runs under validation, but
 // the code that invokes its function pointer is in the prebuilt standard
 // library. The chain ends at the formatting function-pointer shim.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{fmt, hint::black_box};
 
 struct Job(u64);

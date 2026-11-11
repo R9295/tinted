@@ -1,8 +1,8 @@
-// Gap: callbacks from C and the operating system. The handler is installed
+// Coverage: callbacks from C and the operating system. The handler is installed
 // and triggered under validation, but it is called by the kernel through
 // libc, which is not in the call graph, so it has no caller.
 // want: OK
-// today: FAIL
+// today: OK
 use std::hint::black_box;
 
 #[tinted::sink(data)]

@@ -1,8 +1,8 @@
-// Gap: two methods of one trait with the same signature share a type id.
+// Coverage: two methods of one trait with the same signature share a type id.
 // `peek` is called without validation and `run` reaches the sink, and the two
 // cannot be told apart.
 // want: OK
-// today: FAIL
+// today: OK
 use std::hint::black_box;
 
 trait Job {

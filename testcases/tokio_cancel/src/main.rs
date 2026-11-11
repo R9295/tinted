@@ -1,8 +1,8 @@
-// Gap: task cancellation. A future holding validated data reaches the sink
+// Coverage: task cancellation. A future holding validated data reaches the sink
 // only in Drop. Aborting the task makes the runtime destroy it through its
 // task vtable, without returning through the validating submit function.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{
     future::Future,
     pin::Pin,

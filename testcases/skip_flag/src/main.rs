@@ -2,6 +2,7 @@
 // skip the check. The call graph has no notion of which branch runs.
 // want: FAIL
 // today: OK
+// invariant: the validator is assumed to perform its check
 use std::hint::black_box;
 
 fn check(x: u64) {

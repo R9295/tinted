@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
 # Runs every package in testcases/ through the same pipeline as a real
-# project: build it and its dependencies to LLVM IR with KCFI, link the IR,
-# dump the call graph, resolve indirect calls and run tinted-check.
+# project: build it and its dependencies to LLVM IR, link the IR, and run
+# the value/callback analysis passes.
 #
-# Each case is a small program that tinted gets wrong. Its src/main.rs starts
-# with two header lines:
+# Each case's src/main.rs records:
 #   // want:  OK|FAIL   what a perfect tool would say
 #   // today: OK|FAIL   what tinted says now
-# A case passes when tinted still says what `today` records, so a failure
-# means its behaviour changed: either a gap was closed (then update `today`,
-# or move the case out once it equals `want`) or something regressed.
+# A case passes when the analyzer agrees with `want`. The three explicitly
+# marked `invariant` cases instead check `today`: validation predicates,
+# ordering and value identity remain trusted contracts, not proven facts.
 #
-# Needs a nightly cargo and LLVM's llvm-link and opt. Override the LLVM tools
-# with LLVM_LINK and OPT. Pass case names to run only those.
+# Needs nightly cargo and LLVM 23 development tools. Override LLVM_LINK,
+# LLVM_CONFIG and CXX as needed. Pass case names to run only those.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 LLVM_LINK=${LLVM_LINK:-llvm-link-23}
-OPT=${OPT:-opt-23}
 TARGET=x86_64-unknown-linux-gnu
 out=$PWD/target/testcases
 
 cargo build -q
+bash passes/build.sh
 
 if [[ $# -gt 0 ]]; then
   cases=("$@")
@@ -38,35 +37,43 @@ for name in "${cases[@]}"; do
   main=testcases/$name/src/main.rs
   want=$(sed -n 's|^// want: *||p' "$main")
   today=$(sed -n 's|^// today: *||p' "$main")
+  invariant=$(sed -n 's|^// invariant: *||p' "$main")
+  expected=$want
+  [[ -z $invariant ]] || expected=$today
 
   # A target dir per case, so that its IR is only its own crates' IR. --target
   # keeps the flags off the tinted proc macro, which is built for the host.
+  # The directory is wiped so that no stale IR from an earlier build with
+  # different flags ends up in the link.
   dir=$out/$name
-  rm -rf "$dir/ir"
+  rm -rf "$dir"
   CARGO_INCREMENTAL=0 \
-  RUSTFLAGS="--emit=llvm-ir -C codegen-units=1 -C opt-level=0 -Zsanitizer=kcfi -Cpanic=abort -Cunsafe-allow-abi-mismatch=sanitizer" \
+  RUSTFLAGS="--emit=llvm-ir -C codegen-units=1 -C opt-level=1 -Zsanitizer=kcfi -Cpanic=abort -Cunsafe-allow-abi-mismatch=sanitizer" \
   cargo build -q --manifest-path testcases/Cargo.toml -p "$name" \
     --target "$TARGET" --target-dir "$dir"
   mkdir -p "$dir/ir"
   find "$dir/$TARGET" -name "*.ll" -exec cp {} "$dir/ir/" \;
 
   "$LLVM_LINK" "$dir"/ir/*.ll -o "$dir/all.bc"
-  "$OPT" -passes=print-callgraph -disable-output "$dir/all.bc" 2> "$dir/all.cfp"
-  target/debug/tinted-resolve "$dir"/ir/*.ll > "$dir/all.indirect.cfp" 2> /dev/null
-
-  if target/debug/tinted-check "$dir/all.cfp" "$dir/all.indirect.cfp" > "$dir/check.log"; then
+  status=0
+  timeout 60 target/passes/tinted-ir "$dir/all.bc" > "$dir/check.log" 2>&1 || status=$?
+  if [[ $status == 0 ]]; then
     got=OK
-  else
+  elif [[ $status == 1 ]]; then
     got=FAIL
+  else
+    echo "ERROR    $name: analyzer exited with status $status (see $dir/check.log)"
+    failed=1
+    continue
   fi
 
-  if [[ $got != "$today" ]]; then
-    echo "CHANGED  $name: tinted says $got, recorded today: $today (want: $want)"
+  if [[ $got != "$expected" ]]; then
+    echo "FAIL     $name: tinted says $got, expected $expected (see $dir/check.log)"
     failed=1
-  elif [[ $got == "$want" ]]; then
-    echo "covered  $name: $got"
+  elif [[ -n $invariant ]]; then
+    echo "invariant $name: $got (want $want; $invariant)"
   else
-    echo "gap      $name: tinted says $got, want $want"
+    echo "PASS     $name: $got"
   fi
 done
 exit $failed

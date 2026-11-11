@@ -1,9 +1,9 @@
-// Gap: wakers are matched by type. A waker is a hand-written table of
+// Coverage: wakers are matched by type. A waker is a hand-written table of
 // `fn(*const ())` pointers. Only the dangerous waker reaches the sink, and it
 // is only woken under validation, but waking the harmless one is also
 // connected to it.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{
     hint::black_box,
     ptr,

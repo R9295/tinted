@@ -1,8 +1,8 @@
-// Gap: vtable entries that nothing calls. A closure behind `dyn Fn` also gets
+// Coverage: vtable entries that nothing calls. A closure behind `dyn Fn` also gets
 // `FnMut` and `FnOnce` entries in its vtable. They call the closure, nothing
 // calls them, and the chain ends there.
 // want: OK
-// today: FAIL
+// today: OK
 use std::hint::black_box;
 
 #[tinted::sink(data)]

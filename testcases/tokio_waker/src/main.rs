@@ -1,8 +1,8 @@
-// Gap: a custom waker handed to a runtime task. The receiver registers a
+// Coverage: a custom waker handed to a runtime task. The receiver registers a
 // waker carrying validated data; another task sends the message and invokes
 // that waker, outside the validating future's call chain.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{
     future::{Future, poll_fn},
     pin::Pin,

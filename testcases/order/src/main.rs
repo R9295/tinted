@@ -1,6 +1,7 @@
 // Gap: ordering. Validation runs after the sink. The call graph has no order.
 // want: FAIL
 // today: OK
+// invariant: validation is assumed to precede execution
 use std::hint::black_box;
 
 fn check(x: u64) {

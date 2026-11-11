@@ -1,7 +1,7 @@
-// Gap: blocking tasks. A closure captures validated data, but a blocking
+// Coverage: blocking tasks. A closure captures validated data, but a blocking
 // pool worker invokes it through the runtime's task machinery.
 // want: OK
-// today: FAIL
+// today: OK
 use tokio::runtime::Builder;
 
 #[tinted::sink(data)]

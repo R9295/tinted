@@ -1,8 +1,8 @@
-// Gap: callbacks from code that is not in the IR. The closure is run by the
+// Coverage: callbacks from code that is not in the IR. The closure is run by the
 // prebuilt standard library (`Once`), so it has no caller in the graph even
 // though it only ever runs under the validate function.
 // want: OK
-// today: FAIL
+// today: OK
 use std::sync::OnceLock;
 
 static VALUE: OnceLock<u64> = OnceLock::new();

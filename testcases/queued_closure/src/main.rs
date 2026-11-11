@@ -1,7 +1,7 @@
-// Gap: deferred work. A closure is built under the validate function and run
+// Coverage: deferred work. A closure is built under the validate function and run
 // later by a worker thread. The chain follows who runs it, not who made it.
 // want: OK
-// today: FAIL
+// today: OK
 use std::{sync::mpsc, thread};
 
 type Job = Box<dyn FnOnce() + Send>;

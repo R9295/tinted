@@ -1,8 +1,8 @@
-// Gap: rayon jobs. The closure is handed to a parallel iterator under the
+// Coverage: rayon jobs. The closure is handed to a parallel iterator under the
 // validate function, but a rayon worker may run it as a job through a
 // function pointer, not called by it.
 // want: OK
-// today: FAIL
+// today: OK
 use rayon::prelude::*;
 
 #[tinted::sink(data)]

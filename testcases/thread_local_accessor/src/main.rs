@@ -1,9 +1,9 @@
-// Gap: thread-local accessors are matched by type. Only DANGEROUS reaches the
+// Coverage: thread-local accessors are matched by type. Only DANGEROUS reaches the
 // sink when it is first read, and it is only read under validation, but every
 // thread local of the same type has the same accessor signature, so reading
 // HARMLESS is also connected to it.
 // want: OK
-// today: FAIL
+// today: OK
 use std::hint::black_box;
 
 thread_local! {

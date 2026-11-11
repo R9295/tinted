@@ -1,7 +1,7 @@
 //! Attribute macros that mark a function as a `source`, `validate` or `sink`
 //! for an identifier, e.g. `#[tinted::source(vote)]`.
 //!
-//! Each macro inserts an empty nested function named `__source__<id>`,
+//! Each macro inserts a nested function named `__source__<id>`,
 //! `__validate__<id>` or `__sink__<id>` and a call to it at the top of the
 //! annotated function, so the annotation shows up as an edge in the LLVM call
 //! graph. `tinted-check` reads that graph.
@@ -19,15 +19,22 @@ fn mark(kind: &str, attr: TokenStream, item: TokenStream) -> TokenStream {
         Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g,
         _ => panic!("#[{kind}] must be applied to a function with a body"),
     };
-    let mut new_body: TokenStream =
-        format!("#[inline(never)] fn __{kind}__{id}() {{}} __{kind}__{id}();")
-            .parse()
-            .unwrap();
+    // `black_box` gives the marker an effect, so that an optimised build does
+    // not delete the call to it.
+    let mut new_body: TokenStream = format!(
+        "#[inline(never)] fn __{kind}__{id}() {{ ::core::hint::black_box(()); }} __{kind}__{id}();"
+    )
+    .parse()
+    .unwrap();
     new_body.extend(body.stream());
     let mut group = Group::new(Delimiter::Brace, new_body);
     group.set_span(body.span());
     tokens.push(group.into());
-    tokens.into_iter().collect()
+    // The annotated function must stay a function of its own: inlined into a
+    // caller, its marker would make the caller look annotated instead.
+    let mut marked: TokenStream = "#[inline(never)]".parse().unwrap();
+    marked.extend(tokens);
+    marked
 }
 
 #[proc_macro_attribute]

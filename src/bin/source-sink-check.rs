@@ -17,9 +17,14 @@
 //! ignored, so chains can be pasted from this tool's output. A chain that
 //! contains a known chain as a consecutive run of calls is not reported.
 //!
-//! The call graph has no ordering and no indirect calls, so this does not
-//! prove validation runs *before* the sink, and it cannot see through
-//! function pointers, trait objects, channels or threads.
+//! More call graph files can follow the first, and their edges are added. That
+//! is how `source-sink-resolve` supplies the indirect calls and thread spawns
+//! it can resolve.
+//!
+//! The call graph has no ordering, and no indirect calls other than the ones
+//! such a file adds, so this does not prove validation runs *before* the
+//! sink, and it cannot see through channels, or through function pointers,
+//! trait objects and thread spawns that stay unresolved.
 
 use {
     clap::Parser,
@@ -43,8 +48,10 @@ struct Args {
     /// File listing call chains that are known false positives
     #[arg(long, value_name = "FILE")]
     known_issues: Option<String>,
-    /// Output of `opt -passes=print-callgraph`, with mangled names
-    callgraph: String,
+    /// Output of `opt -passes=print-callgraph`, with mangled names, then any
+    /// files of extra edges in the same format (see `source-sink-resolve`)
+    #[arg(required = true)]
+    callgraph: Vec<String>,
 }
 
 /// Parses a limit: a number, or `none` for no limit.
@@ -77,31 +84,38 @@ impl Graph {
         self.names.len() - 1
     }
 
-    fn parse(path: &str) -> Self {
+    fn parse(paths: &[String]) -> Self {
         let mut graph = Self::default();
-        let mut reader = BufReader::new(File::open(path).expect("cannot open call graph"));
-        let mut current = None;
-        let mut buf = vec![];
-        while reader.read_until(b'\n', &mut buf).unwrap() > 0 {
-            let line = String::from_utf8_lossy(&buf);
-            if let Some(rest) = line.strip_prefix("Call graph node for function: '") {
-                current = rest.rfind("'<<").map(|end| graph.node(&rest[..end]));
-            } else if line.starts_with("Call graph node") {
-                current = None;
-            } else if let (Some(caller), Some((_, rest))) =
-                (current, line.split_once(" calls function '"))
-            {
-                let callee = graph.node(rest.trim_end().trim_end_matches('\''));
-                graph.callees[caller].push(callee);
-                graph.callers[callee].push(caller);
-            }
-            buf.clear();
+        for path in paths {
+            graph.read(path);
         }
         for edges in graph.callees.iter_mut().chain(&mut graph.callers) {
             edges.sort_unstable();
             edges.dedup();
         }
         graph
+    }
+
+    /// Adds the nodes and edges of one call graph file.
+    fn read(&mut self, path: &str) {
+        let mut reader = BufReader::new(File::open(path).expect("cannot open call graph"));
+        let mut current = None;
+        let mut buf = vec![];
+        while reader.read_until(b'\n', &mut buf).unwrap() > 0 {
+            let line = String::from_utf8_lossy(&buf);
+            if let Some(rest) = line.strip_prefix("Call graph node for function: '") {
+                current = rest.rfind("'<<").map(|end| self.node(&rest[..end]));
+            } else if line.starts_with("Call graph node") {
+                current = None;
+            } else if let (Some(caller), Some((_, rest))) =
+                (current, line.split_once(" calls function '"))
+            {
+                let callee = self.node(rest.trim_end().trim_end_matches('\''));
+                self.callees[caller].push(callee);
+                self.callers[callee].push(caller);
+            }
+            buf.clear();
+        }
     }
 }
 
@@ -258,13 +272,21 @@ fn report(graph: &Graph, direction: &str, arrow: &str, ok: &str, outcome: Outcom
 }
 
 fn main() -> ExitCode {
-    let Args { max_callers, max_depth, known_issues, callgraph: path } = Args::parse();
+    let Args { max_callers, max_depth, known_issues, callgraph: paths } = Args::parse();
     let known = known_issues.as_deref().map(parse_known_issues).unwrap_or_default();
-    let graph = Graph::parse(&path);
-    println!(
-        "note: indirect calls (function pointers, trait objects, channels, threads) are not in \
-         the call graph and are not followed; a chain can end at one."
-    );
+    let graph = Graph::parse(&paths);
+    if paths.len() == 1 {
+        println!(
+            "note: indirect calls (function pointers, trait objects, channels, threads) are not \
+             in the call graph and are not followed; a chain can end at one."
+        );
+    } else {
+        println!(
+            "note: function pointer calls, trait object calls and thread spawns are only followed \
+             where an extra call graph file resolves them, and channels are not followed; a chain \
+             can end at one."
+        );
+    }
 
     // id -> [source fns, validate fns, sink fns]; the annotated functions are
     // the callers of the marker functions.
@@ -281,7 +303,7 @@ fn main() -> ExitCode {
 
     let mut failed = ids.is_empty();
     if failed {
-        println!("FAIL: no source/validate/sink markers found in {path}");
+        println!("FAIL: no source/validate/sink markers found in {}", paths.join(", "));
     }
     for (id, [sources, validates, sinks]) in &ids {
         println!("[{id}]");

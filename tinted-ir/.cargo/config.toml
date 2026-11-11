@@ -1,0 +1,2 @@
+[env]
+LLVM_SYS_231_PREFIX = { value = "/usr/lib/llvm-23", force = false }

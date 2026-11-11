@@ -1,0 +1,13 @@
+[package]
+name = "tinted-ir"
+description = "Checks tinted source/validate/sink markers against linked LLVM IR"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+llvm-sys = { version = "231", features = ["prefer-dynamic"] }
+rustc-demangle = "0.1.21"
+
+# Standalone: the proc-macro crate must not pull LLVM into its users' builds.
+[workspace]

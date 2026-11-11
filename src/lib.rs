@@ -3,8 +3,8 @@
 //!
 //! Each macro inserts a nested function named `__source__<id>`,
 //! `__validate__<id>` or `__sink__<id>` and a call to it at the top of the
-//! annotated function, so the annotation shows up as an edge in the LLVM call
-//! graph. `tinted-check` reads that graph.
+//! annotated function, so the annotation shows up as a call in the LLVM IR.
+//! `tinted-ir` (in `tinted-ir/`) reads that IR.
 
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 

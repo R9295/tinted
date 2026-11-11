@@ -1,13 +1,9 @@
 [package]
 name = "tinted"
-description = "Source/validate/sink markers and a call-graph check for them"
+description = "Source/validate/sink markers; tinted-ir checks them against LLVM IR"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [lib]
 proc-macro = true
-
-[dependencies]
-clap = { version = "4.5.31", features = ["derive"] }
-rustc-demangle = "0.1.21"

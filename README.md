@@ -3,35 +3,57 @@
 Source/validate/sink markers for Rust functions, and a check of them against
 the program's LLVM IR.
 
-## Analysis passes
+## tinted-ir
 
-Run `bash testcases/run.sh` to build and check every regression. This requires
-nightly Rust plus LLVM 23 headers, libraries, `llvm-config-23`, `clang++-23`,
-and `llvm-link-23`. `LLVM_CONFIG`, `CXX`, and `LLVM_LINK` can override the tools.
+`tinted-ir` (a Rust program in `tinted-ir/`, built against LLVM 23 through
+`llvm-sys`) reads the linked module and checks every sink. It replaces the
+`tinted-check` / `tinted-resolve` call-graph commands.
+
+Run `bash testcases/run.sh` to build and check every regression, and then
+`python3 testcases/controls.py` for the controls that must be rejected. This
+requires nightly Rust, the LLVM 23 development files and `llvm-link-23`
+(`LLVM_LINK` overrides it; `LLVM_SYS_231_PREFIX` selects the LLVM to build
+against, `/usr/lib/llvm-23` by default).
 
 For an existing linked module:
 
 ```sh
-bash passes/build.sh
-target/passes/tinted-ir program.bc
+(cd tinted-ir && cargo build --release)
+tinted-ir/target/release/tinted-ir [--known-issues FILE] program.bc
 ```
 
-The module is expected to be built by rustc at `opt-level=1` with debug info;
-the analyzer runs no optimization of its own. It tracks pointer targets, vtable
-fields and validation provenance from `main`. Where rustc inlined a summarized
-library function, a task body or a validate function, the analyzer recognises
-the inlined code from debug info and treats it as the call it came from. Call contexts stay separate, so a checked invocation cannot excuse
-an unchecked invocation of the same function. Library summaries describe task
-submission, polling, destruction, runtime callbacks and channel handoffs
-(`std::sync::mpsc` and `crossbeam_channel`, including `select!`) without
-expanding entire schedulers. Prebuilt callbacks are discovered from passed
-function pointers and callback records rather than KCFI signature matching.
+The module is expected to be built by rustc at `opt-level=1` with full debug
+info and `-Cpanic=abort` (the flags in `testcases/run.sh`), and linked with
+`llvm-link`; nothing is optimized or run. `-Zsanitizer=kcfi` is no longer
+needed: indirect calls are resolved by following the pointer, not by type id. The check starts at the sinks and works upwards,
+so its cost depends on what is above the sinks, not on the size of the program.
+A sink is checked when every way it can run is validated:
+
+- **Callers.** Every direct caller must be a validate function, be code
+  inlined from one (recognised from debug info), or itself only run validated.
+- **Pointers.** Where the address of a function on the chain is taken (a
+  function pointer, a vtable, a callback record), either the code taking it
+  must be validated, or every call made through that pointer must be. The
+  pointer is followed forward from where it is taken, through locals,
+  arguments, returns and fields, and only when the first does not hold. A
+  pointer handed to code outside the module counts as called where it is
+  handed over. A pointer that cannot be followed counts as called anywhere.
+- **Data.** A call of a sink is also checked when all of its arguments were
+  produced by validated code. Arguments are traced back through locals, calls
+  and channel receives (`std::sync::mpsc` and `crossbeam_channel`, including
+  `select!`); a receive is checked when every send of that message type is.
+
+Only code reachable from `main` counts. A failure prints the chain from the
+sink up to where it ends. `--known-issues FILE` lists known false positives
+(see `known-issues.txt`): blocks separated by blank lines, one demangled
+function name per line as printed in a chain. A block of one name stops every
+chain at that function, and a block of two stops it at that call.
 
 Validators remain trusted contracts. Their predicates, instruction order, and
 choice of checked value are not verified. The three `invariant` cases below
-explicitly retain that limitation; every other case must match `want`, not merely
-reproduce its old failure. The older `tinted-check` / `tinted-resolve` call-graph
-commands remain available for comparison.
+explicitly retain that limitation; every other case must match `want`.
+`source` annotations are accepted but not needed: every chain into a sink is
+checked, wherever it starts.
 
 ## Regression cases
 
@@ -62,7 +84,7 @@ in their source headers and reported separately by the runner.
 | `format_callback` | `Display::fmt` callback run by prebuilt formatting code | OK | OK |
 | `drop_thread_local` | Validated value's destructor run during thread-local cleanup | OK | OK |
 | `unused_vtable_slot` | `dyn Fn` closure's extra vtable entries that nothing calls | OK | OK |
-| `erased_drop` | Type-erased destructors share a type id, with unused generated drop functions | OK | OK |
+| `erased_drop` | Type-erased destructors of two types, with unused generated drop functions | OK | OK |
 | `same_type_pointer` | Two function pointers of the same type | OK | OK |
 | `thread_local_accessor` | Two thread locals of the same type share an accessor signature | OK | OK |
 | `waker` | Two hand-written wakers share their function pointer types | OK | OK |
@@ -73,30 +95,31 @@ in their source headers and reported separately by the runner.
 | `wrong_data` | One value is checked, another is executed | FAIL | OK |
 
 The last three document the trusted invariants: their perfect-tool result is
-FAIL, but these passes deliberately continue to trust the validator annotation.
+FAIL, but tinted-ir deliberately continues to trust the validator annotation.
 
 ## Limitations
 
 These have no testcase.
 
-- **Panic hooks.** `std::panic::set_hook` registers a callback invoked by
-  prebuilt panic machinery, so its caller is missing. Hooks also run with
-  `panic=abort`; this is separate from unwind-only paths.
-- **Allocation-error hooks.** The nightly `std::alloc::set_alloc_error_hook`
-  registers a function pointer invoked by prebuilt allocation-failure code.
-- **Process-launch hooks.** On Unix, `CommandExt::pre_exec` registers a Rust
-  closure invoked in the child process by prebuilt process-launch code.
-- **Unwind-only paths.** KCFI requires `panic=abort`, so code that only runs
-  while a panic unwinds, such as a destructor or the code after a
-  `catch_unwind`, is not in the call graph.
-- **Crates without KCFI.** A crate that rustc cannot compile with KCFI has to
-  be built without it. Indirect calls in it, and into it, are not resolved.
-- **Inline assembly.** A call made from an `asm!` block is not resolved.
-- **Code loaded at run time.** A call into a `dlopen`ed library has no target
-  in the call graph, and calls coming back from it have no caller.
-- **Callbacks from C libraries.** A function that a C or C++ library calls
-  back has no caller, because that code is not in the call graph. The
-  `signal_handler` case shows the same thing with libc.
-- **Function pointers cast to another type.** Indirect calls are matched by
-  type, so a call through a pointer cast to a different function type is not
-  matched to its real target.
+- **Pointers that cannot be followed.** A function pointer or vtable stored
+  in memory reached through another pointer (a heap collection, a field of a
+  boxed object), or passed to a call that is itself made through a pointer,
+  counts as called anywhere. Unless the code that took the address is
+  validated, the sink is reported. This errs towards false positives.
+- **Callbacks kept by outside code.** A callback handed to the prebuilt
+  standard library or a C library counts as called where it is handed over.
+  One that is kept and called later from somewhere else (a panic hook, a
+  signal handler, `pre_exec`) is not seen at that later point.
+- **Channels are matched by message type.** Two channels carrying the same
+  type are not told apart, so an unvalidated send on one fails a receive on
+  the other.
+- **Data behind pointers.** Sink arguments are traced through locals and
+  arguments, without regard to fields. Data read from memory reached through
+  another pointer is not traced and counts as unvalidated.
+- **Calls from outside by name.** Only `main` is taken to be called from
+  outside the module. A function that outside code calls by its symbol name
+  has no caller.
+- **Unwind-only paths.** The module is built with `panic=abort`, so code that
+  only runs while a panic unwinds is not in it.
+- **Inline assembly and code loaded at run time.** A call made from an `asm!`
+  block, or into or out of a `dlopen`ed library, is not seen.

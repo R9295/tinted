@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs every package in testcases/ through the same pipeline as a real
 # project: build it and its dependencies to LLVM IR, link the IR, and run
-# the value/callback analysis passes.
+# tinted-ir on the linked module.
 #
 # Each case's src/main.rs records:
 #   // want:  OK|FAIL   what a perfect tool would say
@@ -10,8 +10,9 @@
 # marked `invariant` cases instead check `today`: validation predicates,
 # ordering and value identity remain trusted contracts, not proven facts.
 #
-# Needs nightly cargo and LLVM 23 development tools. Override LLVM_LINK,
-# LLVM_CONFIG and CXX as needed. Pass case names to run only those.
+# Needs nightly cargo and the LLVM 23 development files. LLVM_LINK overrides
+# llvm-link-23, and LLVM_SYS_231_PREFIX the LLVM that tinted-ir is built
+# against. Pass case names to run only those.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -20,7 +21,7 @@ TARGET=x86_64-unknown-linux-gnu
 out=$PWD/target/testcases
 
 cargo build -q
-bash passes/build.sh
+(cd tinted-ir && cargo build -q --release)
 
 if [[ $# -gt 0 ]]; then
   cases=("$@")
@@ -48,7 +49,7 @@ for name in "${cases[@]}"; do
   dir=$out/$name
   rm -rf "$dir"
   CARGO_INCREMENTAL=0 \
-  RUSTFLAGS="--emit=llvm-ir -C codegen-units=1 -C opt-level=1 -Zsanitizer=kcfi -Cpanic=abort -Cunsafe-allow-abi-mismatch=sanitizer" \
+  RUSTFLAGS="--emit=llvm-ir -C codegen-units=1 -C opt-level=1 -Cpanic=abort" \
   cargo build -q --manifest-path testcases/Cargo.toml -p "$name" \
     --target "$TARGET" --target-dir "$dir"
   mkdir -p "$dir/ir"
@@ -56,7 +57,7 @@ for name in "${cases[@]}"; do
 
   "$LLVM_LINK" "$dir"/ir/*.ll -o "$dir/all.bc"
   status=0
-  timeout 60 target/passes/tinted-ir "$dir/all.bc" > "$dir/check.log" 2>&1 || status=$?
+  timeout 60 tinted-ir/target/release/tinted-ir "$dir/all.bc" > "$dir/check.log" 2>&1 || status=$?
   if [[ $status == 0 ]]; then
     got=OK
   elif [[ $status == 1 ]]; then

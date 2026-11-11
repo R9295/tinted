@@ -1,9 +1,9 @@
-# Known false positives for tinted-check.
+# Known false positives for tinted-ir (--known-issues).
 #
-# One call chain per block, blocks separated by blank lines, one demangled
-# function name per line (as printed by the tool; a leading "<- " or "-> " is
-# ignored). A failing chain that contains one of these chains as a consecutive
-# run of calls is not reported.
+# Blocks separated by blank lines, one demangled function name per line (as
+# printed by the tool; a leading "<- " or "-> " is ignored). A block of one
+# name stops every chain at that function; a block of two names stops it at
+# that call.
 
 # [transaction] Simulation executes a transaction against a bank but never
 # commits the result, and signature verification is optional by design

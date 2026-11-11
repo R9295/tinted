@@ -1,5 +1,5 @@
 [package]
-name = "source-sink"
+name = "tinted"
 description = "Source/validate/sink markers and a call-graph check for them"
 version = "0.1.0"
 edition = "2024"
@@ -11,6 +11,3 @@ proc-macro = true
 [dependencies]
 clap = { version = "4.5.31", features = ["derive"] }
 rustc-demangle = "0.1.21"
-
-[lints]
-workspace = true

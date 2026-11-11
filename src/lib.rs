@@ -1,10 +1,10 @@
 //! Attribute macros that mark a function as a `source`, `validate` or `sink`
-//! for an identifier, e.g. `#[source_sink::source(vote)]`.
+//! for an identifier, e.g. `#[tinted::source(vote)]`.
 //!
 //! Each macro inserts an empty nested function named `__source__<id>`,
 //! `__validate__<id>` or `__sink__<id>` and a call to it at the top of the
 //! annotated function, so the annotation shows up as an edge in the LLVM call
-//! graph. `source-sink-check` reads that graph.
+//! graph. `tinted-check` reads that graph.
 
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 

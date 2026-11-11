@@ -18,7 +18,7 @@
 //! contains a known chain as a consecutive run of calls is not reported.
 //!
 //! More call graph files can follow the first, and their edges are added. That
-//! is how `source-sink-resolve` supplies the indirect calls and thread spawns
+//! is how `tinted-resolve` supplies the indirect calls and thread spawns
 //! it can resolve.
 //!
 //! The call graph has no ordering, and no indirect calls other than the ones
@@ -49,7 +49,7 @@ struct Args {
     #[arg(long, value_name = "FILE")]
     known_issues: Option<String>,
     /// Output of `opt -passes=print-callgraph`, with mangled names, then any
-    /// files of extra edges in the same format (see `source-sink-resolve`)
+    /// files of extra edges in the same format (see `tinted-resolve`)
     #[arg(required = true)]
     callgraph: Vec<String>,
 }

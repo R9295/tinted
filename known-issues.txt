@@ -1,4 +1,4 @@
-# Known false positives for source-sink-check.
+# Known false positives for tinted-check.
 #
 # One call chain per block, blocks separated by blank lines, one demangled
 # function name per line (as printed by the tool; a leading "<- " or "-> " is

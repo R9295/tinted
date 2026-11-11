@@ -1,6 +1,6 @@
 //! Resolves indirect calls (function pointers and trait objects) from LLVM IR
 //! built with `-Zsanitizer=kcfi`, and prints them as extra call-graph edges
-//! that `source-sink-check` reads next to the `opt` call graph.
+//! that `tinted-check` reads next to the `opt` call graph.
 //!
 //! With KCFI, rustc gives every indirect call a `"kcfi"(i32 <type id>)`
 //! operand bundle and every function a `!kcfi_type` with the type id of its
@@ -249,7 +249,7 @@ fn main() {
         }
     }
 
-    // Same syntax as `opt -passes=print-callgraph`, so that source-sink-check
+    // Same syntax as `opt -passes=print-callgraph`, so that tinted-check
     // (and rustfilt) can read it; the call site slot holds the type id.
     let mut out = BufWriter::new(std::io::stdout().lock());
     let mut edges = 0;

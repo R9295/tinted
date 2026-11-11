@@ -1,0 +1,16 @@
+# Every testcase is a package of this workspace; see run.sh.
+[workspace]
+resolver = "3"
+members = [
+    "channel",
+    "order",
+    "queued_closure",
+    "rayon_job",
+    "same_signature_method",
+    "same_type_pointer",
+    "skip_flag",
+    "std_callback",
+    "tokio_task",
+    "unused_vtable_slot",
+    "wrong_data",
+]

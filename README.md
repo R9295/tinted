@@ -68,8 +68,9 @@ when every route to it is covered by one of these rules:
   a vtable or as a callback, either the code taking its address is validated or
   every call through that pointer is.
 - **Data.** Every argument of the call was produced by validated code. This is
-  followed through locals, calls and channel messages (`std::sync::mpsc` and
-  `crossbeam_channel`).
+  followed through locals, calls and channel messages: `std::sync::mpsc`,
+  `crossbeam_channel`, `tokio::sync::{mpsc, oneshot, broadcast}` and
+  `futures::channel::{mpsc, oneshot}`.
 
 Known false positives go in a `--known-issues` file: a block of one function
 name stops every route at that function, and a block of two names stops it at
@@ -89,9 +90,10 @@ python3 testcases/controls.py      # controls that must be rejected
 
 The cases cover:
 
-- **Channels:** data validated before a send on `std::sync::mpsc` and
-  `crossbeam_channel`, bounded channels, `select!`, and a second sender that
-  puts unvalidated data on the same channel (must fail).
+- **Channels:** data validated before a send on `std::sync::mpsc`,
+  `crossbeam_channel`, tokio (`mpsc`, unbounded, `oneshot`) and futures `mpsc`
+  channels, bounded channels, `select!`, and a second sender that puts
+  unvalidated data on the same channel (must fail).
 - **Deferred work:** queued closures, tokio tasks (spawn, blocking, local,
   lifecycle hooks, wakers, cancellation, shutdown), rayon jobs and thread
   spawn hooks.
@@ -131,8 +133,9 @@ Validated code that is reported as unvalidated.
 - **Channels are matched by message type.** Two channels carrying the same type
   are not told apart, so an unvalidated send on one fails a receive on the
   other.
-- **Unrecognised channels.** Only `std::sync::mpsc` and `crossbeam_channel` are
-  followed. Tokio channels and futures streams are not.
+- **Unrecognised channels.** Only the channels listed under the data rule are
+  followed. `tokio::sync::watch`, other channel crates (`flume`,
+  `async-channel`) and hand-written `Stream` implementations are not.
 
 ### False negatives
 

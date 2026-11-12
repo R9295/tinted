@@ -52,31 +52,84 @@ fn first_argument(name: &str, from: usize) -> &str {
 }
 
 /// Classifies a demangled function name as a channel send or receive of
-/// `std::sync::mpsc` (and the `mpmc` code under it) or `crossbeam_channel`.
+/// `std::sync::mpsc` (and the `mpmc` code under it), `crossbeam_channel`,
+/// `tokio::sync::{mpsc, oneshot, broadcast}` or `futures_channel::{mpsc, oneshot}`.
 pub fn channel(name: &str) -> Option<Channel> {
-    let family = if ["std::sync::mpsc::", "<std::sync::mpsc::", "std::sync::mpmc::", "<std::sync::mpmc::"]
-        .iter()
-        .any(|p| name.starts_with(p))
-    {
+    let within = |module: &str| {
+        name.strip_prefix('<').unwrap_or(name).starts_with(module)
+    };
+    let family = if within("std::sync::mpsc::") || within("std::sync::mpmc::") {
         "std"
-    } else if name.starts_with("crossbeam_channel::") || name.starts_with("<crossbeam_channel::") {
+    } else if within("crossbeam_channel::") {
         "crossbeam"
+    } else if within("tokio::sync::mpsc::") {
+        "tokio mpsc"
+    } else if within("tokio::sync::oneshot::") {
+        "tokio oneshot"
+    } else if within("tokio::sync::broadcast::") {
+        "tokio broadcast"
+    } else if within("futures_channel::mpsc::") {
+        "futures mpsc"
+    } else if within("futures_channel::oneshot::") {
+        "futures oneshot"
     } else {
         return None;
     };
-    let send = ["::send", "::try_send", "::write"].iter().any(|p| name.contains(p));
-    let receive = ["::recv", "::try_recv", "::read"].iter().any(|p| name.contains(p))
+    // The async channels add poll-based and blocking variants, and the queue
+    // operations that the public functions are inlined down to.
+    let asynchronous = family.starts_with("tokio") || family.starts_with("futures");
+    let mut send = ["::send", "::try_send", "::write"].iter().any(|p| name.contains(p));
+    let mut receive = ["::recv", "::try_recv", "::read"].iter().any(|p| name.contains(p))
         || name.ends_with("::next");
+    if asynchronous {
+        send |= ["::blocking_send", "::start_send", "::unbounded_send", "::do_send", "::push", "::queue_push"]
+            .iter()
+            .any(|p| name.contains(p));
+        receive |= [
+            "::blocking_recv",
+            "::poll_recv",
+            "::poll_next",
+            "::next_message",
+            "::try_next",
+            "::pop",
+            // A oneshot receiver is itself the future that yields the value.
+            "Receiver<",
+        ]
+        .iter()
+        .any(|p| match *p {
+            "Receiver<" => family.ends_with("oneshot") && name.contains("Receiver<") && name.ends_with("::poll"),
+            p => name.contains(p),
+        });
+    }
     if !send && !receive {
         return None;
     }
     let mut ty = name;
     let mut found = false;
     loop {
-        let at = ["Channel<", "Sender<", "Receiver<", "IntoIter<", "TryIter<", "Iter<"]
-            .iter()
-            .filter_map(|p| ty.find(p).map(|i| i + p.len()))
-            .min();
+        let at = [
+            "Channel<",
+            "Sender<",
+            "Receiver<",
+            "IntoIter<",
+            "TryIter<",
+            "Iter<",
+            // tokio's and futures' internal halves; qualified, so that a
+            // message type such as `SignedTx<..>` is not taken for one.
+            "::Tx<",
+            "::Rx<",
+            "::Chan<",
+            "::Permit<",
+            "::OwnedPermit<",
+            "::Inner<",
+            "::SenderInner<",
+            "::UnboundedInner<",
+            "::BoundedInner<",
+            "::Queue<",
+        ]
+        .iter()
+        .filter_map(|p| ty.find(p).map(|i| i + p.len()))
+        .min();
         match at {
             Some(at) => {
                 ty = first_argument(ty, at);

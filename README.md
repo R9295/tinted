@@ -76,29 +76,27 @@ when every route to it is covered by one of these rules:
   `crossbeam_channel`, `tokio::sync::{mpsc, oneshot, broadcast, watch}`,
   `futures::channel::{mpsc, oneshot}`, `flume` and `async-channel`.
 
-To see why a sink passed or failed, add `--output DIR`. It writes
-`DIR/index.json` (every sink, its verdict and its file) and one JSON file per
-sink with everything the analysis looked at from that sink:
+To see the functions the analysis went through, add `--output DIR`. It writes
+`DIR/index.txt` (every sink, its verdict and its file) and one text file per
+sink: the sink, then its callers under it, then theirs, in the order they were
+followed.
 
-```json
-{"identifier": "block", "sink": "node::insert", "validated": false, "root": 0,
- "routes": [["<- node::insert", "<- node::import", "..."]],
- "functions": ["node::insert", "node::handle", "node::import"],
- "nodes": [
-  {"id": 0, "kind": "function", "validated": false, "function": 0,
-   "claim": "every run of this function is validated", "needs": "all", "children": [1, 2]},
-  {"id": 1, "kind": "accepted", "validated": true, "function": 1, "calls": 0,
-   "at": "src/main.rs:31", "why": "a validate function always runs first in the caller"},
-  {"id": 2, "kind": "sink-call", "validated": false, "function": 2, "calls": 0,
-   "at": "src/main.rs:36", "needs": "any", "children": [3, 4]}
- ]}
+```
+FAIL  [block] node::insert
+
+FAIL  node::insert
+ok      <- node::handle (src/main.rs:31)   [a validate function always runs first in the caller]
+FAIL    <- node::import
+FAIL      <- node::main
+FAIL        <- main   [the program's entry point is reached without validation]
 ```
 
-Each node is one claim. It holds when all (`"needs": "all"`) or any
-(`"needs": "any"`) of its `children` hold; a node without children gives its
-reason in `why`. `function`, `calls` and `target` are indexes into
-`functions`. Accepted calls are listed too, so a pass can be audited as
-well as a failure. `routes` repeats the failing routes printed on the terminal.
+`ok` and `FAIL` say whether that function is only reached validated. `<-` is a
+direct call and `<~` a call through a pointer. A note in brackets says why the
+line stops there; `shown above` means the function's callers were already
+listed. The arguments of generic types are left out (`<a::B<..>>::g`); the
+sink's full name is on its own line. Every file starts with a `#` paragraph
+that explains this format.
 
 Known false positives go in a `--known-issues` file: a block of one function
 name stops every route at that function, and a block of two names stops it at

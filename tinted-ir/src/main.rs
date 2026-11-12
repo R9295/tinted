@@ -40,6 +40,36 @@ use {
 /// for the function pointer itself. For an aggregate value the first offset
 /// is that of the field holding the pointer.
 type Path = Vec<i64>;
+/// Printed at the top of every per-sink file that `--output` writes.
+const HOW_TO_READ: &str = "\
+# How to read this file
+#
+# The first line below is the sink. Every indented line is a function that
+# reaches the line it is under: `<-` calls it directly, `<~` calls it through
+# a pointer. Lines are in the order the analysis followed them.
+#
+# `ok` means the function is only reached through validated code; `FAIL` means
+# it can be reached without validation. To see why a sink failed, follow the
+# `FAIL` lines down to one with a note.
+#
+# A note in [brackets] says why a line goes no further: it is a validate
+# function, a validate function always runs first in that caller, it is a
+# known issue, its callers are `shown above`, or the reason it failed.
+#
+# The arguments of generic types are left out (`<a::B<..>>::g`). The full name
+# of the sink is on the line after this paragraph.
+";
+
+/// Printed at the top of the index that `--output` writes.
+const HOW_TO_READ_INDEX: &str = "\
+# How to read this file
+#
+# One line per sink: its verdict, the file with the functions that reach it,
+# its identifier in [brackets] and its full name. `OK` means every way to
+# reach the sink is validated; `FAIL` means one is not. Open the file to see
+# which.
+";
+
 /// Why a call was accepted without looking at its caller.
 const ACCEPTED: [&str; 3] = [
     "the call is inlined from a validate function",
@@ -1323,196 +1353,117 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Everything the analysis looked at for one sink, as JSON: the nodes
-    /// reachable from the sink in the order they were found, each with what
-    /// it claims, whether it holds, why, and the nodes it depends on.
-    fn dump(&self, id: &str, sink: V, routes: Option<&[Vec<String>]>) -> String {
-        let ir = self.ir;
+    /// The functions the analysis went through from one sink, in order, as
+    /// an indented tree: each line is a caller of the line it is under.
+    fn dump(&self, sink: V) -> String {
         let failed = self.solve();
-        let root = Node::Fn(sink);
-        let mut order: Vec<&Node> = vec![];
-        let mut number: HashMap<&Node, usize> = HashMap::new();
-        let mut pending = VecDeque::new();
-        if let Some((key, _)) = self.graph.get_key_value(&root) {
-            number.insert(key, 0);
-            order.push(key);
-            pending.push_back(key);
-        }
-        while let Some(node) = pending.pop_front() {
-            if let Expr::All(children) | Expr::Any(children) = &self.graph[node] {
-                for child in children {
-                    let Some((key, _)) = self.graph.get_key_value(child) else { continue };
-                    if !number.contains_key(key) {
-                        number.insert(key, order.len());
-                        order.push(key);
-                        pending.push_back(key);
+        let mut out = String::new();
+        let mut shown = HashSet::new();
+        self.dump_node(&Node::Fn(sink), 0, "", &failed, &mut shown, &mut out);
+        out
+    }
+
+    fn dump_node(
+        &self,
+        node: &Node,
+        depth: usize,
+        how: &str,
+        failed: &HashSet<Node>,
+        shown: &mut HashSet<Node>,
+        out: &mut String,
+    ) {
+        let ir = self.ir;
+        let Some(expr) = self.graph.get(node) else { return };
+        let mark = if failed.contains(node) { "FAIL" } else { "ok  " };
+        let indent = "  ".repeat(depth);
+        let mut line = |text: String, note: &str| {
+            out.push_str(&format!("{mark}  {indent}{how}{text}"));
+            if !note.is_empty() {
+                out.push_str(&format!("   [{note}]"));
+            }
+            out.push('\n');
+        };
+        // The last two components of the path are enough to find the file.
+        let location = |inst: V| {
+            ir.source(inst).map_or(String::new(), |at| {
+                let short: Vec<&str> = at.rsplit('/').take(2).collect();
+                format!(" ({})", short.into_iter().rev().collect::<Vec<_>>().join("/"))
+            })
+        };
+        match node {
+            &Node::Fn(function) => {
+                let name = short(&ir.name(function));
+                match expr {
+                    Expr::True if self.validators.contains(&function) => line(name.to_string(), "validate function"),
+                    Expr::True => line(name.to_string(), "known issue"),
+                    Expr::False(reason) => line(name.to_string(), reason),
+                    _ if !shown.insert(node.clone()) => line(name.to_string(), "shown above"),
+                    Expr::All(children) | Expr::Any(children) => {
+                        line(name.to_string(), if children.is_empty() { "nothing calls it" } else { "" });
+                        // Several calls from one function are one caller.
+                        let mut callers = HashSet::new();
+                        for child in children {
+                            let caller = match child {
+                                &Node::SinkCall(call) | &Node::Accepted(call, _) => Some(ir.parent(call)),
+                                &Node::Fn(function) => Some(function),
+                                _ => None,
+                            };
+                            let accepted = matches!(child, Node::Accepted(..));
+                            if caller.is_none_or(|caller| callers.insert((caller, accepted))) {
+                                self.dump_node(child, depth + 1, "<- ", failed, shown, out);
+                            }
+                        }
+                    }
+                    Expr::Pending => line(name.to_string(), "not followed"),
+                }
+            }
+            // A call of the sink: show the caller. The call can also hold
+            // because its arguments are validated data.
+            &Node::SinkCall(call) => {
+                let caller = Node::Fn(ir.parent(call));
+                if !failed.contains(node) && failed.contains(&caller) {
+                    line(
+                        format!("{}{}", short(&ir.name(ir.parent(call))), location(call)),
+                        "the arguments of the call are validated data",
+                    );
+                } else {
+                    self.dump_node(&caller, depth, how, failed, shown, out);
+                }
+            }
+            &Node::Accepted(call, why) => {
+                line(format!("{}{}", short(&ir.name(ir.parent(call))), location(call)), ACCEPTED[why as usize])
+            }
+            // The function's address is taken here; it is then called through
+            // that pointer, possibly from somewhere else.
+            &Node::Creation(site) => {
+                let inst = self.sites[site as usize].inst;
+                let host = Node::Fn(ir.parent(inst));
+                let name = format!("{}{}", short(&ir.name(ir.parent(inst))), location(inst));
+                if matches!(expr, Expr::True) {
+                    line(name, "takes its address, inside validated code");
+                } else if !failed.contains(&host) {
+                    line(name, "takes its address; this function only runs validated");
+                } else if !shown.insert(node.clone()) {
+                    line(name, "takes its address; shown above");
+                } else {
+                    line(name, "takes its address; called through that pointer from:");
+                    match self.graph.get(&Node::Flow(site)) {
+                        Some(Expr::All(callers)) => {
+                            for caller in callers {
+                                self.dump_node(caller, depth + 1, "<~ ", failed, shown, out);
+                            }
+                        }
+                        Some(Expr::False(reason)) => {
+                            out.push_str(&format!("FAIL  {indent}  <~ ?   [{reason}]\n"));
+                        }
+                        _ => {}
                     }
                 }
             }
+            Node::No(reason) => line("?".into(), reason),
+            // The data rule's nodes are not functions on the way.
+            _ => {}
         }
-        let host = |value: V| -> Option<V> {
-            (ir.is_instruction(value) || ir.is_argument(value)).then(|| ir.parent(value))
-        };
-        let at = |value: V| -> Option<String> { ir.is_instruction(value).then(|| ir.source(value)).flatten() };
-        // Function names are long and repeat, so nodes refer to them by index.
-        let mut names: Vec<Rc<str>> = vec![];
-        let mut name_ids: HashMap<V, usize> = HashMap::new();
-        let mut name = |function: V| -> usize {
-            *name_ids.entry(function).or_insert_with(|| {
-                names.push(ir.name(function));
-                names.len() - 1
-            })
-        };
-        // A value, without the function it is in (that is a field of its own).
-        let what = |value: V| -> String {
-            if ir.is_global(value) || ir.is_function(value) {
-                "a global".into()
-            } else if ir.is_argument(value) {
-                format!("argument {} of the function", ir.param_index(value))
-            } else {
-                format!("the {}", format!("{:?}", ir.opcode(value)).replace("LLVM", "").to_lowercase())
-            }
-        };
-        let mut body = String::new();
-        let mut out = String::new();
-        out.push_str("{\n");
-        out.push_str(&format!("  \"identifier\": {},\n", json(id)));
-        out.push_str(&format!("  \"sink\": {},\n", json(&ir.name(sink))));
-        out.push_str(&format!("  \"validated\": {},\n", !failed.contains(&root)));
-        out.push_str("  \"root\": 0,\n  \"routes\": [");
-        for (i, route) in routes.unwrap_or_default().iter().enumerate() {
-            out.push_str(if i == 0 { "\n    [" } else { ",\n    [" });
-            out.push_str(&route.iter().map(|line| json(line.trim())).collect::<Vec<_>>().join(", "));
-            out.push(']');
-        }
-        for (index, &node) in order.iter().enumerate() {
-            let expr = &self.graph[node];
-            // kind, what the node claims, the function it is about, the
-            // instruction it is at
-            let mut target = None;
-            let (kind, claim, function, inst): (&str, String, Option<V>, Option<V>) = match node {
-                &Node::Fn(f) => ("function", "every run of this function is validated".into(), Some(f), None),
-                &Node::Creation(site) => {
-                    let site = &self.sites[site as usize];
-                    target = Some(site.target);
-                    (
-                        "address-taken",
-                        "the address of `target` taken here is only called validated".into(),
-                        host(site.inst),
-                        Some(site.inst),
-                    )
-                }
-                &Node::Flow(site) => {
-                    let site = &self.sites[site as usize];
-                    target = Some(site.target);
-                    (
-                        "pointer-calls",
-                        "every call through the pointer to `target` taken here is validated".into(),
-                        host(site.inst),
-                        Some(site.inst),
-                    )
-                }
-                &Node::SinkCall(call) => (
-                    "sink-call",
-                    "this call of the sink is validated: by its caller, or by its arguments".into(),
-                    host(call),
-                    Some(call),
-                ),
-                &Node::Data(call) => {
-                    ("arguments", "every argument of this call is validated data".into(), host(call), Some(call))
-                }
-                &Node::Val(value) => {
-                    ("value", format!("{} is validated data", what(value)), host(value), Some(value))
-                }
-                &Node::Operands(value) => (
-                    "operands",
-                    format!("what {} is computed from is validated data", what(value)),
-                    host(value),
-                    Some(value),
-                ),
-                &Node::Mem(pointer) => (
-                    "memory",
-                    format!("what is stored behind {} is validated data", what(pointer)),
-                    host(pointer),
-                    Some(pointer),
-                ),
-                &Node::ArgAt(call, i) => (
-                    "argument",
-                    format!("argument {i} of this call is validated: by the caller, or as data"),
-                    host(call),
-                    Some(call),
-                ),
-                &Node::ArgMem(call, i) => (
-                    "argument-memory",
-                    format!("the memory behind argument {i} of this call is validated: by the caller, or as data"),
-                    host(call),
-                    Some(call),
-                ),
-                Node::Sends(key) => (
-                    "channel-sends",
-                    format!("every send of {} is validated", key.replace(':', " channel message ")),
-                    None,
-                    None,
-                ),
-                &Node::Accepted(call, _) => ("accepted", "this call needs no further checking".into(), host(call), Some(call)),
-                Node::Yes => ("accepted", "an undefined value needs no validation".into(), None, None),
-                Node::No(_) => ("rejected", "does not hold".into(), None, None),
-            };
-            let why: Option<String> = match (node, expr) {
-                (&Node::Accepted(_, why), _) => Some(ACCEPTED[why as usize].into()),
-                (Node::Yes, _) => None,
-                (_, Expr::False(reason)) => Some(reason.to_string()),
-                (_, Expr::Pending) => Some("not worked out: the verdict did not depend on it".into()),
-                (&Node::Fn(f), Expr::True) if self.validators.contains(&f) => Some("it is a validate function".into()),
-                (Node::Fn(_), Expr::True) => Some("listed as a known issue".into()),
-                (Node::Operands(_), Expr::True) => Some("it is the result of a validate function".into()),
-                (_, Expr::True) => Some("it is inside validated code".into()),
-                (_, Expr::All(children)) if children.is_empty() => Some("nothing reaches it".into()),
-                (_, Expr::Any(children)) if children.is_empty() => Some("there is no way to validate it".into()),
-                _ => None,
-            };
-            let (needs, children): (Option<&str>, &[Node]) = match expr {
-                Expr::All(children) => (Some("all"), children),
-                Expr::Any(children) => (Some("any"), children),
-                _ => (None, &[]),
-            };
-            let mut fields = vec![
-                format!("\"id\": {index}"),
-                format!("\"kind\": {}", json(kind)),
-                format!("\"validated\": {}", !failed.contains(node)),
-                format!("\"claim\": {}", json(&claim)),
-            ];
-            if let Some(function) = function {
-                fields.push(format!("\"function\": {}", name(function)));
-            }
-            if let Some(callee) = inst.filter(|&i| ir.is_instruction(i) && ir.is_call(i)).and_then(|i| ir.called_function(i)) {
-                fields.push(format!("\"calls\": {}", name(callee)));
-            }
-            if let Some(target) = target {
-                fields.push(format!("\"target\": {}", name(target)));
-            }
-            if let Some(source) = inst.and_then(at) {
-                fields.push(format!("\"at\": {}", json(&source)));
-            }
-            if let Some(why) = why {
-                fields.push(format!("\"why\": {}", json(&why)));
-            }
-            if let Some(needs) = needs {
-                let ids: Vec<String> =
-                    children.iter().filter_map(|c| number.get(c)).map(|n| n.to_string()).collect();
-                fields.push(format!("\"needs\": {}", json(needs)));
-                fields.push(format!("\"children\": [{}]", ids.join(", ")));
-            }
-            body.push_str(&format!("    {{{}}}{}\n", fields.join(", "), if index + 1 == order.len() { "" } else { "," }));
-        }
-        out.push_str("\n  ],\n  \"functions\": [\n");
-        for (index, text) in names.iter().enumerate() {
-            out.push_str(&format!("    {}{}\n", json(text), if index + 1 == names.len() { "" } else { "," }));
-        }
-        out.push_str("  ],\n  \"nodes\": [\n");
-        out.push_str(&body);
-        out.push_str("  ]\n}\n");
-        out
     }
 
     fn describe(&self, node: &Node) -> Option<String> {
@@ -1611,21 +1562,34 @@ impl<'a> Analysis<'a> {
     }
 }
 
-/// A JSON string literal.
-fn json(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for c in text.chars() {
+/// A function name with the arguments of its generic types left out:
+/// `<a::B<c::D, e::F>>::g` becomes `<a::B<..>>::g`.
+fn short(name: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    let mut previous = ' ';
+    for c in name.chars() {
         match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+            '<' => {
+                depth += 1;
+                if depth == 1 {
+                    out.push('<');
+                } else if depth == 2 {
+                    out.push_str("<..>");
+                }
+            }
+            // The `>` of `->` in a function type closes nothing.
+            '>' if previous != '-' && depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push('>');
+                }
+            }
+            c if depth <= 1 => out.push(c),
+            _ => {}
         }
+        previous = c;
     }
-    out.push('"');
     out
 }
 
@@ -1847,8 +1811,9 @@ fn run() -> ExitCode {
             reachable += 1;
             let result = analysis.check(sink);
             if let Some(directory) = &output {
-                let file = format!("{:03}-{id}-{}.json", written.len() + 1, file_name(&name));
-                let text = analysis.dump(&id, sink, result.as_deref());
+                let file = format!("{:03}-{id}-{}.txt", written.len() + 1, file_name(&name));
+                let verdict = if result.is_none() { "OK" } else { "FAIL" };
+                let text = format!("{HOW_TO_READ}\n{verdict}  [{id}] {name}\n\n{}", analysis.dump(sink));
                 if let Err(error) = std::fs::write(format!("{directory}/{file}"), text) {
                     eprintln!("cannot write {directory}/{file}: {error}");
                     return ExitCode::from(2);
@@ -1904,25 +1869,12 @@ fn run() -> ExitCode {
         );
     }
     if let Some(directory) = &output {
-        let entries: Vec<String> = written
-            .iter()
-            .map(|(id, sink, verdict, file)| {
-                format!(
-                    "    {{\"identifier\": {}, \"sink\": {}, \"verdict\": {}, \"file\": {}}}",
-                    json(id),
-                    json(sink),
-                    json(verdict),
-                    json(file)
-                )
-            })
-            .collect();
-        let index = format!(
-            "{{\n  \"verdict\": {},\n  \"sinks\": [\n{}\n  ]\n}}\n",
-            json(if ok { "OK" } else { "FAIL" }),
-            entries.join(",\n")
-        );
-        if let Err(error) = std::fs::write(format!("{directory}/index.json"), index) {
-            eprintln!("cannot write {directory}/index.json: {error}");
+        let mut index = format!("{HOW_TO_READ_INDEX}\n");
+        for (id, sink, verdict, file) in &written {
+            index.push_str(&format!("{verdict:4}  {file}   [{id}] {sink}\n"));
+        }
+        if let Err(error) = std::fs::write(format!("{directory}/index.txt"), index) {
+            eprintln!("cannot write {directory}/index.txt: {error}");
             return ExitCode::from(2);
         }
     }

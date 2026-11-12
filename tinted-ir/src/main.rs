@@ -164,6 +164,12 @@ struct Analysis<'a> {
     // Per identifier.
     validators: HashSet<V>,
     inlined_validators: HashSet<ir::Md>,
+    /// Per function, the calls after which validation has run: calls of a
+    /// validate function, and the marker calls of ones inlined there.
+    /// The flag is set for a marker call, which is inside the inlined validator.
+    validator_points: HashMap<V, Vec<(V, bool)>>,
+    /// Calls accepted because a validator point always runs first.
+    preceded: HashSet<V>,
     sinks: HashSet<V>,
     graph: HashMap<Node, Expr>,
     data_nodes: usize,
@@ -193,6 +199,8 @@ impl<'a> Analysis<'a> {
             sends: None,
             validators: HashSet::new(),
             inlined_validators: HashSet::new(),
+            validator_points: HashMap::new(),
+            preceded: HashSet::new(),
             sinks: HashSet::new(),
             graph: HashMap::new(),
             data_nodes: 0,
@@ -245,6 +253,58 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
+    }
+
+    /// Whether validation always runs before `call` in its function: every
+    /// path from the function's entry to `call` passes a validator point.
+    ///
+    /// Inlining puts several source functions into one, so a point only
+    /// counts when it is in a source function that `call` is in too (the same
+    /// inlined copy of it, or a callee inlined into that copy).
+    fn preceded_by_validator(&mut self, call: V) -> bool {
+        let ir = self.ir;
+        let function = ir.parent(call);
+        let Some(points) = self.validator_points.get(&function) else { return false };
+        let Some(frames) = ir.inlined_through(call) else { return false };
+        let points: HashSet<V> = points
+            .iter()
+            .filter(|&&(point, _)| point != call)
+            .filter(|&&(point, inlined)| {
+                // A validator inlined here was called from one frame further out.
+                let Some(at) = ir.inlined_through(point) else { return false };
+                let at = &at[usize::from(inlined).min(at.len())..];
+                frames.ends_with(at)
+            })
+            .map(|&(point, _)| point)
+            .collect();
+        if points.is_empty() {
+            return false;
+        }
+        // Walk from the entry, stopping at the points: is `call` still reached?
+        let entry = ir.entry_block(function);
+        let mut seen = HashSet::from([entry]);
+        let mut pending = vec![entry];
+        while let Some(block) = pending.pop() {
+            let mut stopped = false;
+            for inst in ir.block_instructions(block) {
+                if inst == call {
+                    return false;
+                }
+                if points.contains(&inst) {
+                    stopped = true;
+                    break;
+                }
+            }
+            if !stopped {
+                for successor in ir.successors(block) {
+                    if seen.insert(successor) {
+                        pending.push(successor);
+                    }
+                }
+            }
+        }
+        self.preceded.insert(call);
+        true
     }
 
     fn validated_inst(&self, inst: V) -> bool {
@@ -881,7 +941,7 @@ impl<'a> Analysis<'a> {
                 let sink = self.sinks.contains(&function) && !ir.params(function).is_empty();
                 let mut children = vec![];
                 for &call in &uses.calls {
-                    if self.validated_inst(call) {
+                    if self.validated_inst(call) || self.preceded_by_validator(call) {
                         continue;
                     }
                     if known(self, ir.parent(call)) {
@@ -1194,8 +1254,8 @@ impl<'a> Analysis<'a> {
         failed
     }
 
-    /// Checks one sink function. Returns the failing chain, if any.
-    fn check(&mut self, sink: V) -> Option<Vec<String>> {
+    /// Checks one sink function. Returns the failing routes, if any.
+    fn check(&mut self, sink: V) -> Option<Vec<Vec<String>>> {
         let root = Node::Fn(sink);
         self.build(root.clone());
         loop {
@@ -1270,41 +1330,67 @@ impl<'a> Analysis<'a> {
         None
     }
 
-    fn explain(&self, root: &Node, failed: &HashSet<Node>) -> Vec<String> {
-        let mut lines = vec![];
-        let mut seen = HashSet::new();
-        let mut node = root.clone();
-        loop {
-            if !seen.insert(node.clone()) {
-                break;
-            }
-            lines.extend(self.describe(&node));
-            match &self.graph[&node] {
-                Expr::False(reason) => {
-                    lines.push(format!("   {reason}"));
-                    break;
-                }
-                Expr::All(children) => match children.iter().find(|c| failed.contains(c)) {
-                    Some(child) => node = child.clone(),
-                    None => break,
-                },
-                Expr::Any(children) => {
-                    // Follow the callers; say why the alternative fails too.
-                    for other in &children[1..] {
-                        lines.extend(self.describe(other));
-                        if let Some(reason) = self.reason(other, failed) {
-                            lines.push(format!("     {reason}"));
-                        }
-                    }
-                    match children.first() {
-                        Some(child) => node = child.clone(),
-                        None => break,
-                    }
-                }
-                _ => break,
-            }
+    /// Every distinct failing route from `root`: one per unvalidated way in.
+    /// A route that reaches a function an earlier route already went through
+    /// stops there and refers to that route.
+    fn explain(&self, root: &Node, failed: &HashSet<Node>) -> Vec<Vec<String>> {
+        let mut routes = vec![];
+        let mut shown = HashMap::new();
+        self.route(root, vec![], failed, &mut shown, &mut routes);
+        routes
+    }
+
+    fn route(
+        &self,
+        node: &Node,
+        mut lines: Vec<String>,
+        failed: &HashSet<Node>,
+        shown: &mut HashMap<Node, usize>,
+        routes: &mut Vec<Vec<String>>,
+    ) {
+        let current = routes.len() + 1;
+        if let Some(&earlier) = shown.get(node) {
+            lines.extend(self.describe(node));
+            lines.push(if earlier == current {
+                "   (calls itself; see above)".into()
+            } else {
+                format!("   (continues as in route {earlier})")
+            });
+            routes.push(lines);
+            return;
         }
-        lines
+        shown.insert(node.clone(), current);
+        lines.extend(self.describe(node));
+        match &self.graph[node] {
+            Expr::False(reason) => {
+                lines.push(format!("   {reason}"));
+                routes.push(lines);
+            }
+            Expr::All(children) => {
+                let mut any = false;
+                for child in children.iter().filter(|c| failed.contains(c)) {
+                    any = true;
+                    self.route(child, lines.clone(), failed, shown, routes);
+                }
+                if !any {
+                    routes.push(lines);
+                }
+            }
+            Expr::Any(children) => {
+                // Follow the callers; say why the alternative fails too.
+                for other in children.iter().skip(1) {
+                    lines.extend(self.describe(other));
+                    if let Some(reason) = self.reason(other, failed) {
+                        lines.push(format!("     {reason}"));
+                    }
+                }
+                match children.first() {
+                    Some(child) => self.route(child, lines, failed, shown, routes),
+                    None => routes.push(lines),
+                }
+            }
+            _ => routes.push(lines),
+        }
     }
 }
 
@@ -1423,6 +1509,7 @@ fn run() -> ExitCode {
     struct Marked {
         validators: HashSet<V>,
         inlined: HashSet<ir::Md>,
+        points: HashMap<V, Vec<(V, bool)>>,
         sinks: Vec<V>,
     }
     let mut ids: BTreeMap<String, Marked> = BTreeMap::new();
@@ -1443,9 +1530,18 @@ fn run() -> ExitCode {
             match kind {
                 "validate" if !inlined.is_null() => {
                     marked.inlined.insert(inlined);
+                    marked.points.entry(host).or_default().push((user, true));
                 }
                 "validate" => {
                     marked.validators.insert(host);
+                    for call in ir.users(host) {
+                        if ir.is_call(call) && ir.called_function(call) == Some(host) {
+                            let points = marked.points.entry(ir.parent(call)).or_default();
+                            if !points.contains(&(call, false)) {
+                                points.push((call, false));
+                            }
+                        }
+                    }
                 }
                 "sink" if !marked.sinks.contains(&host) => marked.sinks.push(host),
                 _ => {}
@@ -1463,6 +1559,8 @@ fn run() -> ExitCode {
         println!("[{id}]");
         analysis.validators = marked.validators;
         analysis.inlined_validators = marked.inlined;
+        analysis.validator_points = marked.points;
+        analysis.preceded.clear();
         analysis.sinks = marked.sinks.iter().copied().collect();
         analysis.graph.clear();
         analysis.data_nodes = 0;
@@ -1483,11 +1581,14 @@ fn run() -> ExitCode {
             reachable += 1;
             match analysis.check(sink) {
                 None => println!("  sink: {name}: OK"),
-                Some(chain) => {
+                Some(routes) => {
                     ok = false;
-                    println!("  sink: {name}: FAIL: unchecked sink");
-                    for line in chain {
-                        println!("    {line}");
+                    println!("  sink: {name}: FAIL: unchecked sink, {} route(s)", routes.len());
+                    for (index, route) in routes.iter().enumerate() {
+                        println!("    route {}:", index + 1);
+                        for line in route {
+                            println!("      {line}");
+                        }
                     }
                 }
             }
@@ -1495,6 +1596,27 @@ fn run() -> ExitCode {
         if reachable == 0 {
             println!("  FAIL: no reachable sinks");
             ok = false;
+        }
+        if !analysis.preceded.is_empty() {
+            println!(
+                "  note: {} call(s) accepted because a validate function always runs first in the caller",
+                analysis.preceded.len()
+            );
+            if trace {
+                let mut lines: Vec<String> = analysis
+                    .preceded
+                    .iter()
+                    .map(|&call| {
+                        let callee = ir.called_function(call).map_or("?".into(), |f| ir.name(f).to_string());
+                        format!("    {} in {}", callee, ir.name(ir.parent(call)))
+                    })
+                    .collect();
+                lines.sort();
+                lines.dedup();
+                for line in lines {
+                    println!("{line}");
+                }
+            }
         }
         if analysis.ignored > 0 {
             println!("  note: {} chain(s) stopped at a known issue", analysis.ignored);

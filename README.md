@@ -64,6 +64,10 @@ when every route to it is covered by one of these rules:
 
 - **Callers.** Every caller is a validate function, is inlined from one, or is
   itself only reached through validated code.
+- **Earlier calls.** In the function making the call, every path from its
+  entry to the call first calls a validate function. This accepts
+  `validate(x)?; sink(x);`, and rejects a sink reached on a branch that skips
+  the validator.
 - **Pointers.** Where a function on the route is used as a function pointer, in
   a vtable or as a callback, either the code taking its address is validated or
   every call through that pointer is.
@@ -100,6 +104,10 @@ The cases cover:
   spawn hooks.
 - **Callbacks from prebuilt code:** `OnceLock`, `Hash` impls called by the hash
   table, signal handlers, `Display::fmt`, thread-local destructors.
+- **Earlier calls:** a validator called next to the sink, before a loop, and
+  in every arm of a dispatch function; and the shapes that must fail: one
+  branch only, the wrong order, an unvalidated arm, and a second caller that
+  never validates.
 - **Pointer precision:** two function pointers, wakers, trait methods or
   thread-local accessors that share a type or signature, unused vtable slots
   and type-erased destructors.
@@ -114,9 +122,12 @@ that validators are trusted (see below).
 
 Validated code that is reported as unvalidated.
 
-- **Sibling validation.** A validator called just before the sink from the same
-  function is not credited. The validator must be on the call chain above the
-  sink, or produce the sink's arguments.
+- **Validation across an `.await`.** A validator called before an `.await`
+  and a sink called after it are in different states of the compiled future,
+  so the earlier-calls rule does not connect them.
+- **Validation one call down.** A function that calls a helper which calls the
+  validator is not credited; the validator must be called by the function
+  itself, or be above the sink on the call chain.
 - **Values returned through memory.** A validator's result that passes through
   a `Result`, an `Option` or an `await` is written to memory and read back, and
   the data rule loses it.
@@ -125,8 +136,6 @@ Validated code that is reported as unvalidated.
 - **Data behind pointers.** Sink arguments are traced through locals and
   arguments, not fields. Data read through another pointer counts as
   unvalidated.
-- **Single event loops.** When one dispatch function is fed by one event enum,
-  a verified network message and an internal event look the same.
 - **Pointers that cannot be followed.** A function pointer, vtable or trait
   object stored behind another pointer (a heap collection, a field of a boxed
   object), or passed to a call that is itself made through a pointer, counts as
@@ -143,8 +152,10 @@ Validated code that is reported as unvalidated.
 Unvalidated routes that are not reported.
 
 - **Validators are trusted.** The tool checks that a validator is on the route.
-  A validator that checks the wrong value, skips a branch behind a flag, or
-  runs after the sink still passes.
+  A validator that checks the wrong value or skips a branch behind a flag
+  still passes. Under the earlier-calls rule, so does a sink reached after the
+  validator reported a failure, and a sink that follows a validator call for
+  unrelated data in the same function.
 - **Code not reachable from `main`.** Library entry points that the binary
   never calls are not checked.
 - **Callbacks kept by outside code.** A callback handed to the prebuilt

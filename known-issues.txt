@@ -33,9 +33,28 @@
 # have already been through this check once.
 solana_core::block_creation_loop::handle_parent_ready
 
+# The same resend where `handle_parent_ready` is inlined into `produce_slot`:
+# only this call is accepted, not everything `produce_slot` does.
+<- <solana_core::banking_channels::BankingPacketSender>::send
+<- solana_core::block_creation_loop::produce_slot
+
 # [transaction] NOT a false positive, but an accepted trust boundary: with
 # `--enable-scheduler-bindings`, banking stage executes and records whatever
 # the external scheduler process submits, and verifies no signatures on it.
 # SECURITY.md treats that process as an operator-trusted component. Remove this
 # block to have the check fail on it.
 <solana_core::banking_stage::consume_worker::external::ExternalWorker>::execute_batch
+
+# The same boundary where `execute_batch` is inlined into `process_message`.
+<solana_core::banking_stage::consume_worker::external::ExternalWorker>::process_message
+
+# [cert] The leader applies the footer of the block it is producing itself.
+# The reward certificate comes from its own reward container, which is fed by
+# sig-verified votes, and the finalization certificate from its consensus pool.
+<solana_runtime::block_component_processor::BlockComponentProcessor>::update_bank_with_footer_fields
+solana_core::block_creation_loop::produce_slot
+
+# [program] Closing a program stores a `Closed` tombstone for it; there is no
+# ELF to verify.
+<solana_program_runtime::program_cache::tx_batch::ProgramCacheForTxBatch>::store_modified_entry
+solana_bpf_loader_program::process_loader_upgradeable_instruction

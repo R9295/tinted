@@ -8,6 +8,7 @@ use {
 
 pub type V = LLVMValueRef;
 pub type Md = LLVMMetadataRef;
+pub type B = LLVMBasicBlockRef;
 /// An unknown byte offset.
 pub const ANY: i64 = i64::MIN;
 
@@ -298,6 +299,46 @@ impl Ir {
     }
     pub fn operand(&self, v: V, i: u32) -> V {
         unsafe { LLVMGetOperand(v, i) }
+    }
+    /// The first block of a function, or null for a declaration.
+    pub fn entry_block(&self, function: V) -> B {
+        unsafe { LLVMGetFirstBasicBlock(function) }
+    }
+    pub fn block_instructions(&self, block: B) -> Vec<V> {
+        let mut all = vec![];
+        unsafe {
+            let mut inst = LLVMGetFirstInstruction(block);
+            while !inst.is_null() {
+                all.push(inst);
+                inst = LLVMGetNextInstruction(inst);
+            }
+        }
+        all
+    }
+    pub fn successors(&self, block: B) -> Vec<B> {
+        unsafe {
+            let terminator = LLVMGetBasicBlockTerminator(block);
+            if terminator.is_null() {
+                return vec![];
+            }
+            (0..LLVMGetNumSuccessors(terminator)).map(|i| LLVMGetSuccessor(terminator, i)).collect()
+        }
+    }
+    /// The call sites an instruction was inlined through, innermost first.
+    /// `None` without a debug location.
+    pub fn inlined_through(&self, inst: V) -> Option<Vec<Md>> {
+        let mut location = self.location(inst);
+        if location.is_null() {
+            return None;
+        }
+        let mut chain = vec![];
+        loop {
+            location = self.inlined_at(location);
+            if location.is_null() {
+                return Some(chain);
+            }
+            chain.push(location);
+        }
     }
     /// The function an instruction or argument is in.
     pub fn parent(&self, v: V) -> V {

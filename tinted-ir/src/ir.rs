@@ -53,7 +53,8 @@ fn first_argument(name: &str, from: usize) -> &str {
 
 /// Classifies a demangled function name as a channel send or receive of
 /// `std::sync::mpsc` (and the `mpmc` code under it), `crossbeam_channel`,
-/// `tokio::sync::{mpsc, oneshot, broadcast}` or `futures_channel::{mpsc, oneshot}`.
+/// `tokio::sync::{mpsc, oneshot, broadcast, watch}`,
+/// `futures_channel::{mpsc, oneshot}`, `flume` or `async_channel`.
 pub fn channel(name: &str) -> Option<Channel> {
     let within = |module: &str| {
         name.strip_prefix('<').unwrap_or(name).starts_with(module)
@@ -68,6 +69,12 @@ pub fn channel(name: &str) -> Option<Channel> {
         "tokio oneshot"
     } else if within("tokio::sync::broadcast::") {
         "tokio broadcast"
+    } else if within("tokio::sync::watch::") {
+        "tokio watch"
+    } else if within("flume::") {
+        "flume"
+    } else if within("async_channel::") {
+        "async-channel"
     } else if within("futures_channel::mpsc::") {
         "futures mpsc"
     } else if within("futures_channel::oneshot::") {
@@ -77,7 +84,7 @@ pub fn channel(name: &str) -> Option<Channel> {
     };
     // The async channels add poll-based and blocking variants, and the queue
     // operations that the public functions are inlined down to.
-    let asynchronous = family.starts_with("tokio") || family.starts_with("futures");
+    let asynchronous = !matches!(family, "std" | "crossbeam");
     let mut send = ["::send", "::try_send", "::write"].iter().any(|p| name.contains(p));
     let mut receive = ["::recv", "::try_recv", "::read"].iter().any(|p| name.contains(p))
         || name.ends_with("::next");
@@ -100,6 +107,22 @@ pub fn channel(name: &str) -> Option<Channel> {
             "Receiver<" => family.ends_with("oneshot") && name.contains("Receiver<") && name.ends_with("::poll"),
             p => name.contains(p),
         });
+    }
+    // The futures that an async send or receive returns do the work in their
+    // `poll`; their destructors and other methods are not sends or receives.
+    let polls = |future: &str| name.contains(future) && name.contains("::poll");
+    match family {
+        // A watch receiver reads the current value by borrowing it.
+        "tokio watch" => receive |= name.contains("::borrow"),
+        "flume" => {
+            send |= polls("::SendFut<");
+            receive |= polls("::RecvFut<") || polls("::RecvStream<");
+        }
+        "async-channel" => {
+            send |= polls("::SendInner<") || name.contains("::force_send");
+            receive |= polls("::RecvInner<");
+        }
+        _ => {}
     }
     if !send && !receive {
         return None;
@@ -126,6 +149,16 @@ pub fn channel(name: &str) -> Option<Channel> {
             "::UnboundedInner<",
             "::BoundedInner<",
             "::Queue<",
+            "::Shared<",
+            "::Ref<",
+            "::SendFut<",
+            "::RecvFut<",
+            "::RecvStream<",
+            "::SendSink<",
+            "::SendInner<",
+            "::RecvInner<",
+            "::Send<",
+            "::Recv<",
         ]
         .iter()
         .filter_map(|p| ty.find(p).map(|i| i + p.len()))

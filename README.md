@@ -69,8 +69,8 @@ when every route to it is covered by one of these rules:
   every call through that pointer is.
 - **Data.** Every argument of the call was produced by validated code. This is
   followed through locals, calls and channel messages: `std::sync::mpsc`,
-  `crossbeam_channel`, `tokio::sync::{mpsc, oneshot, broadcast}` and
-  `futures::channel::{mpsc, oneshot}`.
+  `crossbeam_channel`, `tokio::sync::{mpsc, oneshot, broadcast, watch}`,
+  `futures::channel::{mpsc, oneshot}`, `flume` and `async-channel`.
 
 Known false positives go in a `--known-issues` file: a block of one function
 name stops every route at that function, and a block of two names stops it at
@@ -91,8 +91,9 @@ python3 testcases/controls.py      # controls that must be rejected
 The cases cover:
 
 - **Channels:** data validated before a send on `std::sync::mpsc`,
-  `crossbeam_channel`, tokio (`mpsc`, unbounded, `oneshot`) and futures `mpsc`
-  channels, bounded channels, `select!`, and a second sender that puts
+  `crossbeam_channel`, tokio (`mpsc`, unbounded, `oneshot`, `broadcast`,
+  `watch`), futures (`mpsc`, `oneshot`), `flume` (blocking and async) and
+  `async-channel`, bounded channels, `select!`, and a second sender that puts
   unvalidated data on the same channel (must fail).
 - **Deferred work:** queued closures, tokio tasks (spawn, blocking, local,
   lifecycle hooks, wakers, cancellation, shutdown), rayon jobs and thread
@@ -134,8 +135,8 @@ Validated code that is reported as unvalidated.
   are not told apart, so an unvalidated send on one fails a receive on the
   other.
 - **Unrecognised channels.** Only the channels listed under the data rule are
-  followed. `tokio::sync::watch`, other channel crates (`flume`,
-  `async-channel`) and hand-written `Stream` implementations are not.
+  followed. Other channel crates and hand-written `Stream` implementations are
+  not.
 
 ### False negatives
 

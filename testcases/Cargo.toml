@@ -2,6 +2,8 @@
 [workspace]
 resolver = "3"
 members = [
+    "async_channel",
+    "async_channel_unchecked_sender",
     "channel",
     "channel_unchecked_sender",
     "crossbeam_bounded",
@@ -11,8 +13,12 @@ members = [
     "crossbeam_unchecked_sender",
     "drop_thread_local",
     "erased_drop",
+    "flume_async",
+    "flume_channel",
+    "flume_unchecked_sender",
     "format_callback",
     "futures_channel",
+    "futures_oneshot",
     "futures_unchecked_sender",
     "hash_callback",
     "order",
@@ -28,6 +34,7 @@ members = [
     "std_callback",
     "thread_local_accessor",
     "thread_spawn_hook",
+    "tokio_broadcast",
     "tokio_cancel",
     "tokio_channel",
     "tokio_channel_unchecked_sender",
@@ -40,6 +47,8 @@ members = [
     "tokio_unbounded",
     "tokio_unchecked_task",
     "tokio_waker",
+    "tokio_watch",
+    "tokio_watch_unchecked_sender",
     "trait_unchecked_call",
     "unused_vtable_slot",
     "waker",

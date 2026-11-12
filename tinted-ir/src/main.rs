@@ -40,6 +40,12 @@ use {
 /// for the function pointer itself. For an aggregate value the first offset
 /// is that of the field holding the pointer.
 type Path = Vec<i64>;
+/// Why a call was accepted without looking at its caller.
+const ACCEPTED: [&str; 3] = [
+    "the call is inlined from a validate function",
+    "a validate function always runs first in the caller",
+    "listed as a known issue",
+];
 const MAX_PATH: usize = 6;
 const MAX_FACTS: usize = 200_000;
 const MAX_DATA_NODES: usize = 200_000;
@@ -132,6 +138,9 @@ enum Node {
     ArgMem(V, u32),
     /// Every send on a channel is validated.
     Sends(String),
+    /// A call that needs no further checking, and why (see `ACCEPTED`). Only
+    /// recorded for `--output`.
+    Accepted(V, u8),
     Yes,
     No(Rc<str>),
 }
@@ -148,6 +157,8 @@ enum Expr {
 struct Analysis<'a> {
     ir: &'a Ir,
     trace: bool,
+    /// Keep accepted calls in the graph, for `--output`.
+    record: bool,
     entry: Option<V>,
     live: HashSet<V>,
     // Shared by all identifiers.
@@ -185,6 +196,7 @@ impl<'a> Analysis<'a> {
         let mut analysis = Self {
             ir,
             trace,
+            record: false,
             entry,
             live: HashSet::new(),
             uses: HashMap::new(),
@@ -918,7 +930,7 @@ impl<'a> Analysis<'a> {
         use LLVMOpcode::*;
         let ir = self.ir;
         match node {
-            Node::Yes => Expr::True,
+            Node::Yes | Node::Accepted(..) => Expr::True,
             Node::No(reason) => Expr::False(reason.clone()),
             Node::Flow(_) | Node::Data(_) => Expr::Pending,
             &Node::Fn(function) => {
@@ -941,18 +953,29 @@ impl<'a> Analysis<'a> {
                 let sink = self.sinks.contains(&function) && !ir.params(function).is_empty();
                 let mut children = vec![];
                 for &call in &uses.calls {
-                    if self.validated_inst(call) || self.preceded_by_validator(call) {
-                        continue;
-                    }
-                    if known(self, ir.parent(call)) {
+                    let accepted = if self.validated_inst(call) {
+                        Some(0)
+                    } else if self.preceded_by_validator(call) {
+                        Some(1)
+                    } else if known(self, ir.parent(call)) {
                         self.ignored += 1;
-                        continue;
+                        Some(2)
+                    } else {
+                        None
+                    };
+                    match accepted {
+                        Some(why) if self.record => children.push(Node::Accepted(call, why)),
+                        Some(_) => {}
+                        None => children.push(if sink { Node::SinkCall(call) } else { Node::Fn(ir.parent(call)) }),
                     }
-                    children.push(if sink { Node::SinkCall(call) } else { Node::Fn(ir.parent(call)) });
                 }
                 for &site in &uses.sites {
-                    if known(self, ir.parent(self.sites[site as usize].inst)) {
+                    let inst = self.sites[site as usize].inst;
+                    if known(self, ir.parent(inst)) {
                         self.ignored += 1;
+                        if self.record {
+                            children.push(Node::Accepted(inst, 2));
+                        }
                         continue;
                     }
                     children.push(Node::Creation(site));
@@ -1187,6 +1210,8 @@ impl<'a> Analysis<'a> {
                 for &(call, _) in &state.uses {
                     if !self.validated_inst(call) {
                         children.push(Node::Fn(ir.parent(call)));
+                    } else if self.record {
+                        children.push(Node::Accepted(call, 0));
                     }
                 }
                 Expr::All(children)
@@ -1298,6 +1323,198 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Everything the analysis looked at for one sink, as JSON: the nodes
+    /// reachable from the sink in the order they were found, each with what
+    /// it claims, whether it holds, why, and the nodes it depends on.
+    fn dump(&self, id: &str, sink: V, routes: Option<&[Vec<String>]>) -> String {
+        let ir = self.ir;
+        let failed = self.solve();
+        let root = Node::Fn(sink);
+        let mut order: Vec<&Node> = vec![];
+        let mut number: HashMap<&Node, usize> = HashMap::new();
+        let mut pending = VecDeque::new();
+        if let Some((key, _)) = self.graph.get_key_value(&root) {
+            number.insert(key, 0);
+            order.push(key);
+            pending.push_back(key);
+        }
+        while let Some(node) = pending.pop_front() {
+            if let Expr::All(children) | Expr::Any(children) = &self.graph[node] {
+                for child in children {
+                    let Some((key, _)) = self.graph.get_key_value(child) else { continue };
+                    if !number.contains_key(key) {
+                        number.insert(key, order.len());
+                        order.push(key);
+                        pending.push_back(key);
+                    }
+                }
+            }
+        }
+        let host = |value: V| -> Option<V> {
+            (ir.is_instruction(value) || ir.is_argument(value)).then(|| ir.parent(value))
+        };
+        let at = |value: V| -> Option<String> { ir.is_instruction(value).then(|| ir.source(value)).flatten() };
+        // Function names are long and repeat, so nodes refer to them by index.
+        let mut names: Vec<Rc<str>> = vec![];
+        let mut name_ids: HashMap<V, usize> = HashMap::new();
+        let mut name = |function: V| -> usize {
+            *name_ids.entry(function).or_insert_with(|| {
+                names.push(ir.name(function));
+                names.len() - 1
+            })
+        };
+        // A value, without the function it is in (that is a field of its own).
+        let what = |value: V| -> String {
+            if ir.is_global(value) || ir.is_function(value) {
+                "a global".into()
+            } else if ir.is_argument(value) {
+                format!("argument {} of the function", ir.param_index(value))
+            } else {
+                format!("the {}", format!("{:?}", ir.opcode(value)).replace("LLVM", "").to_lowercase())
+            }
+        };
+        let mut body = String::new();
+        let mut out = String::new();
+        out.push_str("{\n");
+        out.push_str(&format!("  \"identifier\": {},\n", json(id)));
+        out.push_str(&format!("  \"sink\": {},\n", json(&ir.name(sink))));
+        out.push_str(&format!("  \"validated\": {},\n", !failed.contains(&root)));
+        out.push_str("  \"root\": 0,\n  \"routes\": [");
+        for (i, route) in routes.unwrap_or_default().iter().enumerate() {
+            out.push_str(if i == 0 { "\n    [" } else { ",\n    [" });
+            out.push_str(&route.iter().map(|line| json(line.trim())).collect::<Vec<_>>().join(", "));
+            out.push(']');
+        }
+        for (index, &node) in order.iter().enumerate() {
+            let expr = &self.graph[node];
+            // kind, what the node claims, the function it is about, the
+            // instruction it is at
+            let mut target = None;
+            let (kind, claim, function, inst): (&str, String, Option<V>, Option<V>) = match node {
+                &Node::Fn(f) => ("function", "every run of this function is validated".into(), Some(f), None),
+                &Node::Creation(site) => {
+                    let site = &self.sites[site as usize];
+                    target = Some(site.target);
+                    (
+                        "address-taken",
+                        "the address of `target` taken here is only called validated".into(),
+                        host(site.inst),
+                        Some(site.inst),
+                    )
+                }
+                &Node::Flow(site) => {
+                    let site = &self.sites[site as usize];
+                    target = Some(site.target);
+                    (
+                        "pointer-calls",
+                        "every call through the pointer to `target` taken here is validated".into(),
+                        host(site.inst),
+                        Some(site.inst),
+                    )
+                }
+                &Node::SinkCall(call) => (
+                    "sink-call",
+                    "this call of the sink is validated: by its caller, or by its arguments".into(),
+                    host(call),
+                    Some(call),
+                ),
+                &Node::Data(call) => {
+                    ("arguments", "every argument of this call is validated data".into(), host(call), Some(call))
+                }
+                &Node::Val(value) => {
+                    ("value", format!("{} is validated data", what(value)), host(value), Some(value))
+                }
+                &Node::Operands(value) => (
+                    "operands",
+                    format!("what {} is computed from is validated data", what(value)),
+                    host(value),
+                    Some(value),
+                ),
+                &Node::Mem(pointer) => (
+                    "memory",
+                    format!("what is stored behind {} is validated data", what(pointer)),
+                    host(pointer),
+                    Some(pointer),
+                ),
+                &Node::ArgAt(call, i) => (
+                    "argument",
+                    format!("argument {i} of this call is validated: by the caller, or as data"),
+                    host(call),
+                    Some(call),
+                ),
+                &Node::ArgMem(call, i) => (
+                    "argument-memory",
+                    format!("the memory behind argument {i} of this call is validated: by the caller, or as data"),
+                    host(call),
+                    Some(call),
+                ),
+                Node::Sends(key) => (
+                    "channel-sends",
+                    format!("every send of {} is validated", key.replace(':', " channel message ")),
+                    None,
+                    None,
+                ),
+                &Node::Accepted(call, _) => ("accepted", "this call needs no further checking".into(), host(call), Some(call)),
+                Node::Yes => ("accepted", "an undefined value needs no validation".into(), None, None),
+                Node::No(_) => ("rejected", "does not hold".into(), None, None),
+            };
+            let why: Option<String> = match (node, expr) {
+                (&Node::Accepted(_, why), _) => Some(ACCEPTED[why as usize].into()),
+                (Node::Yes, _) => None,
+                (_, Expr::False(reason)) => Some(reason.to_string()),
+                (_, Expr::Pending) => Some("not worked out: the verdict did not depend on it".into()),
+                (&Node::Fn(f), Expr::True) if self.validators.contains(&f) => Some("it is a validate function".into()),
+                (Node::Fn(_), Expr::True) => Some("listed as a known issue".into()),
+                (Node::Operands(_), Expr::True) => Some("it is the result of a validate function".into()),
+                (_, Expr::True) => Some("it is inside validated code".into()),
+                (_, Expr::All(children)) if children.is_empty() => Some("nothing reaches it".into()),
+                (_, Expr::Any(children)) if children.is_empty() => Some("there is no way to validate it".into()),
+                _ => None,
+            };
+            let (needs, children): (Option<&str>, &[Node]) = match expr {
+                Expr::All(children) => (Some("all"), children),
+                Expr::Any(children) => (Some("any"), children),
+                _ => (None, &[]),
+            };
+            let mut fields = vec![
+                format!("\"id\": {index}"),
+                format!("\"kind\": {}", json(kind)),
+                format!("\"validated\": {}", !failed.contains(node)),
+                format!("\"claim\": {}", json(&claim)),
+            ];
+            if let Some(function) = function {
+                fields.push(format!("\"function\": {}", name(function)));
+            }
+            if let Some(callee) = inst.filter(|&i| ir.is_instruction(i) && ir.is_call(i)).and_then(|i| ir.called_function(i)) {
+                fields.push(format!("\"calls\": {}", name(callee)));
+            }
+            if let Some(target) = target {
+                fields.push(format!("\"target\": {}", name(target)));
+            }
+            if let Some(source) = inst.and_then(at) {
+                fields.push(format!("\"at\": {}", json(&source)));
+            }
+            if let Some(why) = why {
+                fields.push(format!("\"why\": {}", json(&why)));
+            }
+            if let Some(needs) = needs {
+                let ids: Vec<String> =
+                    children.iter().filter_map(|c| number.get(c)).map(|n| n.to_string()).collect();
+                fields.push(format!("\"needs\": {}", json(needs)));
+                fields.push(format!("\"children\": [{}]", ids.join(", ")));
+            }
+            body.push_str(&format!("    {{{}}}{}\n", fields.join(", "), if index + 1 == order.len() { "" } else { "," }));
+        }
+        out.push_str("\n  ],\n  \"functions\": [\n");
+        for (index, text) in names.iter().enumerate() {
+            out.push_str(&format!("    {}{}\n", json(text), if index + 1 == names.len() { "" } else { "," }));
+        }
+        out.push_str("  ],\n  \"nodes\": [\n");
+        out.push_str(&body);
+        out.push_str("  ]\n}\n");
+        out
+    }
+
     fn describe(&self, node: &Node) -> Option<String> {
         let ir = self.ir;
         Some(match node {
@@ -1394,6 +1611,44 @@ impl<'a> Analysis<'a> {
     }
 }
 
+/// A JSON string literal.
+fn json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A short file name for a function: its path without generic arguments.
+fn file_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    for (i, c) in name.char_indices() {
+        match c {
+            // The leading `<` of `<Type>::method` and `<Type as Trait>::method`.
+            '<' if i == 0 => {}
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            '>' => {}
+            _ if depth > 0 => {}
+            c if c.is_ascii_alphanumeric() || c == '_' => out.push(c),
+            _ if !out.ends_with('.') => out.push('.'),
+            _ => {}
+        }
+    }
+    out.trim_matches('.').chars().take(120).collect()
+}
+
 fn is_allocation(raw: &str) -> bool {
     raw.contains("__rust_alloc") || raw.contains("__rust_realloc") || matches!(raw, "malloc" | "calloc" | "realloc")
 }
@@ -1470,17 +1725,19 @@ fn known_issues(path: &str) -> Result<(HashSet<String>, HashSet<(String, String)
 fn run() -> ExitCode {
     let mut trace = false;
     let mut known = None;
+    let mut output = None;
     let mut paths = vec![];
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--trace" => trace = true,
             "--known-issues" => known = args.next(),
+            "--output" => output = args.next(),
             _ => paths.push(arg),
         }
     }
     let [path] = &paths[..] else {
-        eprintln!("usage: tinted-ir [--known-issues FILE] [--trace] PROGRAM.bc|PROGRAM.ll");
+        eprintln!("usage: tinted-ir [--known-issues FILE] [--output DIR] [--trace] PROGRAM.bc|PROGRAM.ll");
         return ExitCode::from(2);
     };
     let known = match known.as_deref().map(known_issues).transpose() {
@@ -1499,6 +1756,15 @@ fn run() -> ExitCode {
     };
     let mut analysis = Analysis::new(&ir, trace);
     (analysis.known_functions, analysis.known_calls) = known;
+    analysis.record = output.is_some();
+    // One entry per sink for the index: identifier, sink, verdict, file.
+    let mut written: Vec<(String, String, &str, String)> = vec![];
+    if let Some(directory) = &output {
+        if let Err(error) = std::fs::create_dir_all(directory) {
+            eprintln!("cannot create {directory}: {error}");
+            return ExitCode::from(2);
+        }
+    }
     if analysis.entry.is_none() {
         println!("FAIL: no main entry point");
         return ExitCode::FAILURE;
@@ -1579,7 +1845,17 @@ fn run() -> ExitCode {
                 continue;
             }
             reachable += 1;
-            match analysis.check(sink) {
+            let result = analysis.check(sink);
+            if let Some(directory) = &output {
+                let file = format!("{:03}-{id}-{}.json", written.len() + 1, file_name(&name));
+                let text = analysis.dump(&id, sink, result.as_deref());
+                if let Err(error) = std::fs::write(format!("{directory}/{file}"), text) {
+                    eprintln!("cannot write {directory}/{file}: {error}");
+                    return ExitCode::from(2);
+                }
+                written.push((id.clone(), name.to_string(), if result.is_none() { "OK" } else { "FAIL" }, file));
+            }
+            match result {
                 None => println!("  sink: {name}: OK"),
                 Some(routes) => {
                     ok = false;
@@ -1626,6 +1902,29 @@ fn run() -> ExitCode {
             analysis.graph.len(),
             analysis.flows.len()
         );
+    }
+    if let Some(directory) = &output {
+        let entries: Vec<String> = written
+            .iter()
+            .map(|(id, sink, verdict, file)| {
+                format!(
+                    "    {{\"identifier\": {}, \"sink\": {}, \"verdict\": {}, \"file\": {}}}",
+                    json(id),
+                    json(sink),
+                    json(verdict),
+                    json(file)
+                )
+            })
+            .collect();
+        let index = format!(
+            "{{\n  \"verdict\": {},\n  \"sinks\": [\n{}\n  ]\n}}\n",
+            json(if ok { "OK" } else { "FAIL" }),
+            entries.join(",\n")
+        );
+        if let Err(error) = std::fs::write(format!("{directory}/index.json"), index) {
+            eprintln!("cannot write {directory}/index.json: {error}");
+            return ExitCode::from(2);
+        }
     }
     println!("{}", if ok { "OK" } else { "FAIL" });
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }

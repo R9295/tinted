@@ -76,6 +76,30 @@ when every route to it is covered by one of these rules:
   `crossbeam_channel`, `tokio::sync::{mpsc, oneshot, broadcast, watch}`,
   `futures::channel::{mpsc, oneshot}`, `flume` and `async-channel`.
 
+To see why a sink passed or failed, add `--output DIR`. It writes
+`DIR/index.json` (every sink, its verdict and its file) and one JSON file per
+sink with everything the analysis looked at from that sink:
+
+```json
+{"identifier": "block", "sink": "node::insert", "validated": false, "root": 0,
+ "routes": [["<- node::insert", "<- node::import", "..."]],
+ "functions": ["node::insert", "node::handle", "node::import"],
+ "nodes": [
+  {"id": 0, "kind": "function", "validated": false, "function": 0,
+   "claim": "every run of this function is validated", "needs": "all", "children": [1, 2]},
+  {"id": 1, "kind": "accepted", "validated": true, "function": 1, "calls": 0,
+   "at": "src/main.rs:31", "why": "a validate function always runs first in the caller"},
+  {"id": 2, "kind": "sink-call", "validated": false, "function": 2, "calls": 0,
+   "at": "src/main.rs:36", "needs": "any", "children": [3, 4]}
+ ]}
+```
+
+Each node is one claim. It holds when all (`"needs": "all"`) or any
+(`"needs": "any"`) of its `children` hold; a node without children gives its
+reason in `why`. `function`, `calls` and `target` are indexes into
+`functions`. Accepted calls are listed too, so a pass can be audited as
+well as a failure. `routes` repeats the failing routes printed on the terminal.
+
 Known false positives go in a `--known-issues` file: a block of one function
 name stops every route at that function, and a block of two names stops it at
 that call. See `known-issues.txt`.

@@ -324,6 +324,31 @@ impl Ir {
             (0..LLVMGetNumSuccessors(terminator)).map(|i| LLVMGetSuccessor(terminator, i)).collect()
         }
     }
+    /// The source file and line of an instruction, as `file:line`.
+    pub fn source(&self, inst: V) -> Option<String> {
+        let location = self.location(inst);
+        if location.is_null() {
+            return None;
+        }
+        unsafe {
+            let line = LLVMDILocationGetLine(location);
+            let scope = LLVMDILocationGetScope(location);
+            if scope.is_null() {
+                return None;
+            }
+            let file = LLVMDIScopeGetFile(scope);
+            if file.is_null() {
+                return None;
+            }
+            let mut len = 0;
+            let ptr = LLVMDIFileGetFilename(file, &mut len);
+            if ptr.is_null() || len == 0 {
+                return None;
+            }
+            let name = String::from_utf8_lossy(std::slice::from_raw_parts(ptr.cast(), len as usize));
+            Some(format!("{name}:{line}"))
+        }
+    }
     /// The call sites an instruction was inlined through, innermost first.
     /// `None` without a debug location.
     pub fn inlined_through(&self, inst: V) -> Option<Vec<Md>> {

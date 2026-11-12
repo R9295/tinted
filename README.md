@@ -107,30 +107,54 @@ that validators are trusted (see below).
 
 ## Limitations
 
+### False positives
+
+Validated code that is reported as unvalidated.
+
+- **Sibling validation.** A validator called just before the sink from the same
+  function is not credited. The validator must be on the call chain above the
+  sink, or produce the sink's arguments.
+- **Values returned through memory.** A validator's result that passes through
+  a `Result`, an `Option` or an `await` is written to memory and read back, and
+  the data rule loses it.
+- **Method receivers.** `self` on a method sink is never validated data, so the
+  data rule fails for it.
+- **Data behind pointers.** Sink arguments are traced through locals and
+  arguments, not fields. Data read through another pointer counts as
+  unvalidated.
+- **Single event loops.** When one dispatch function is fed by one event enum,
+  a verified network message and an internal event look the same.
+- **Pointers that cannot be followed.** A function pointer, vtable or trait
+  object stored behind another pointer (a heap collection, a field of a boxed
+  object), or passed to a call that is itself made through a pointer, counts as
+  called from anywhere.
+- **Channels are matched by message type.** Two channels carrying the same type
+  are not told apart, so an unvalidated send on one fails a receive on the
+  other.
+- **Unrecognised channels.** Only `std::sync::mpsc` and `crossbeam_channel` are
+  followed. Tokio channels and futures streams are not.
+
+### False negatives
+
+Unvalidated routes that are not reported.
+
 - **Validators are trusted.** The tool checks that a validator is on the route.
-  It does not check that the validator tests the right value, on every branch,
-  before the sink runs. A flag that skips the check, validation that runs after
-  the sink, and checking one value while using another all pass.
-- **Pointers that cannot be followed.** A function pointer or vtable stored
-  behind another pointer (a heap collection, a field of a boxed object), or
-  passed to a call that is itself made through a pointer, counts as called from
-  anywhere. This errs towards false positives.
+  A validator that checks the wrong value, skips a branch behind a flag, or
+  runs after the sink still passes.
+- **Code not reachable from `main`.** Library entry points that the binary
+  never calls are not checked.
 - **Callbacks kept by outside code.** A callback handed to the prebuilt
   standard library or a C library counts as called where it is handed over. One
   that is kept and called later (a panic hook, a signal handler, `pre_exec`) is
   not seen at that later point.
-- **Channels are matched by message type.** Two channels carrying the same type
-  are not told apart, so an unvalidated send on one fails a receive on the
-  other. Only `std::sync::mpsc` and `crossbeam_channel` are recognised.
-- **Data behind pointers.** Sink arguments are traced through locals and
-  arguments, not fields. Data read through another pointer counts as
-  unvalidated.
 - **Calls from outside by name.** Only `main` is taken to be called from
   outside the module.
 - **Unwind-only paths.** The module is built with `panic=abort`, so code that
   only runs while a panic unwinds is not in it.
 - **Inline assembly and code loaded at run time.** A call made from an `asm!`
-  block, or into or out of a `dlopen`ed library, is not seen.
+  block, into or out of a `dlopen`ed library, or in JIT-compiled code is not
+  seen.
+- **Code across a language boundary.** Calls into C or C++ are opaque.
 
 ## Requirements
 
